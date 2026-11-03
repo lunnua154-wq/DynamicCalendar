@@ -1,0 +1,16 @@
+# DynaCalendar — server dependencies
+# KEEP THIS LIST SHORT. A new dependency requires a docs/DECISIONS.md entry FIRST (AGENTS.md rule 4).
+# Pins are lower bounds; re-verify versions when M0 starts.
+
+fastapi>=0.115               # API + static hosting
+uvicorn[standard]>=0.30     # ASGI server
+python-multipart>=0.0.9     # file uploads (required by FastAPI)
+icalendar>=5.0              # ICS (RFC 5545) parse & emit
+markitdown>=0.0.1           # any document -> markdown (one library)
+pypdf>=4.0                  #   markitdown extra: PDF text layer
+mammoth>=1.6                #   markitdown extra: .docx
+python-pptx>=0.6            #   markitdown extra: .pptx
+openai>=1.30                # LLM client for ANY OpenAI-compatible endpoint (offline-safe)
+
+# dev / test
+pytest>=8.0
