@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+@theme {
+  --color-external: #0ea5e9; /* sky-500 */
+  --color-study: #d97706; /* amber-600 */
+  --color-revision: #7c3aed; /* violet-600 */
+  --color-done: #94a3b8; /* slate-400 */
+}
