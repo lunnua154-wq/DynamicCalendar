@@ -1,0 +1,13 @@
+# runtime data (gitignored)
+data/
+__pycache__/
+*.pyc
+.env
+.venv/
+
+# frontend build / deps
+web/dist/
+web/node_modules/
+
+# OS
+.DS_Store
