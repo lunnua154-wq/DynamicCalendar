@@ -83,6 +83,11 @@ def inbox_page():
 
 app.mount("/static", StaticFiles(directory=_asset_dir()), name="static")
 
+# Serve hashed Vite build assets at /assets/ (production build path).
+_ASSETS_DIR = DIST_DIR / "assets"
+if _ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
+
 
 # --------------------------------------------------------------------------- calendar
 
