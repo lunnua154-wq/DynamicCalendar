@@ -1,298 +1,331 @@
-/** P2 — Week (time grid) with drag-reschedule, checkboxes, progress bar. */
+/** P2 — Week (time grid): checkboxes, drag-reschedule, progress bar. */
 
 import { Calendar } from "@fullcalendar/core";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
-import "@fullcalendar/timegrid";
 import "../tailwind.css";
-import { api, toast, dialog, utcTime, utcDay, setText } from "./common.js";
+import {
+  api,
+  el,
+  fmtDay,
+  fmtTime,
+  fmtHours,
+  hide,
+  initNav,
+  localDayString,
+  show,
+  toast,
+  toggle,
+} from "./common.js";
 
-const calendarEl = document.getElementById("week-calendar");
 const rangeEl = document.getElementById("week-range");
 const progressWrap = document.getElementById("progress-wrap");
 const progressBar = document.getElementById("progress-bar");
 const progressText = document.getElementById("progress-text");
-const btnToday = document.getElementById("btn-today");
 const popover = document.getElementById("job-popover");
 const weekEmpty = document.getElementById("week-empty");
 
 let calendar;
-let currentJobId = null;
+let events = [];
+let draggedJob = null;
 
-function isoDate(d) {
-  return d.toISOString().slice(0, 10);
-}
+function cardFor(event) {
+  const job = event.extendedProps.job;
+  const isExternal = event.extendedProps.kind === "external";
+  const isDone = job && job.status === "done";
+  const isRevision = event.extendedProps.kind === "revision";
+  const conflicted = job && job.status === "conflicted";
 
-function renderEvent(arg) {
-  const e = arg.event;
-  const job = e.extendedProps.job;
-  const isExternal = e.extendedProps.kind === "external";
-  const card = document.createElement("div");
-  card.className = `p-2 text-[11px] leading-tight rounded border ${
-    isExternal
-      ? "border-external bg-external/90 text-slate-900 font-medium cursor-not-allowed"
-      : job && job.status === "done"
-      ? "border-done bg-slate-100 text-slate-500 line-through font-medium opacity-70 cursor-default"
-      : "border-study bg-white text-slate-900 font-medium cursor-move shadow-sm"
-  }`;
+  const card = el(
+    "div",
+    `h-full w-full px-1.5 py-1 rounded-md border text-[10px] leading-tight shadow-sm overflow-hidden flex items-start gap-1.5 ${
+      isExternal
+        ? "bg-sky-100 border-sky-400 text-sky-900 cursor-not-allowed"
+        : isDone
+        ? "bg-slate-100 border-slate-300 text-slate-500 opacity-70"
+        : conflicted
+        ? "bg-rose-50 border-rose-400 text-rose-900 cursor-grab"
+        : isRevision
+        ? "bg-violet-50 border-violet-400 border-dashed text-violet-900 cursor-grab"
+        : "bg-white border-amber-400 text-amber-900 cursor-grab"
+    }`
+  );
 
-  const time = document.createElement("div");
-  time.className = "text-[10px] " + (isExternal ? "text-slate-700" : "text-slate-500");
-  time.textContent = e.allDay ? "All day" : `${utcTime(e.start)}–${utcTime(e.end)}`;
-  card.appendChild(time);
-
-  const title = document.createElement("div");
-  title.className = "truncate font-medium mt-0.5";
-  title.textContent = e.title;
-  card.appendChild(title);
-
-  const meta = document.createElement("div");
-  meta.className = "text-[9px] text-slate-400 mt-0.5 truncate";
-  meta.textContent = isExternal
-    ? `· ${e.extendedProps.venue || ""}`
-    : job
-    ? `· ${job.duration_min}m ${job.kind === "revision" ? "R" + job.revision_round : ""}`
-    : "";
-  card.appendChild(meta);
-
-  if (job && job.status !== "done") {
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.className = "mt-1 shrink-0";
-    cb.title = "Mark done";
-    cb.onclick = async (ev) => {
-      ev.stopPropagation();
-      await tickJob(job.id);
+  // The checkbox is the core progress signal of this page (UX_SPEC P2).
+  if (job && !isDone && !conflicted) {
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-amber-600";
+    checkbox.setAttribute("aria-label", `Mark ${event.title} done`);
+    checkbox.onclick = (clickEvent) => clickEvent.stopPropagation();
+    checkbox.onchange = async () => {
+      checkbox.disabled = true;
+      try {
+        await api(`jobs/${job.id}/complete`, { method: "POST" });
+        toast("Job done — revisions scheduled", "success");
+        await loadEvents();
+      } catch (error) {
+        checkbox.checked = false;
+        checkbox.disabled = false;
+        toast(error.message, "error");
+      }
     };
-    card.appendChild(cb);
+    card.appendChild(checkbox);
+  } else if (isDone) {
+    card.appendChild(el("span", "mt-0.5 shrink-0 font-bold text-emerald-600", "✓"));
   }
-  return { domNodes: [card] };
+
+  const body = el("div", "min-w-0 flex-1");
+  body.appendChild(
+    el("div", "font-medium opacity-90", event.allDay ? "All day" : `${fmtTime(event.start)}–${fmtTime(event.end)}`)
+  );
+  const title = el("div", "font-semibold truncate", event.title);
+  if (isDone) title.classList.add("line-through");
+  body.appendChild(title);
+
+  const meta = [];
+  if (isExternal) {
+    if (event.extendedProps.venue) meta.push(event.extendedProps.venue);
+    meta.push("fixed");
+  } else if (job) {
+    if (job.topic_name) meta.push(job.topic_name);
+    meta.push(`${job.duration_min} min`);
+    if (conflicted) meta.push("no free slot");
+  }
+  if (meta.length) body.appendChild(el("div", "truncate opacity-80", meta.join(" · ")));
+  card.appendChild(body);
+  return card;
 }
 
 async function loadEvents() {
   if (!calendar) return;
   const view = calendar.view;
-  const from = isoDate(view.currentStart);
-  const to = isoDate(view.currentEnd);
+  const from = localDayString(view.currentStart);
+  const to = localDayString(new Date(view.currentEnd.getTime() - 86400000));
   try {
-    const events = await api(`events?from=${from}&to=${to}`);
+    events = await api(`events?from=${from}&to=${to}`);
     calendar.removeAllEvents();
-    events.forEach((e) => {
+    events.forEach((event) => {
+      const draggable = event.kind !== "external";
       calendar.addEvent({
-        id: e.id,
-        title: e.title,
-        start: e.dtstart,
-        end: e.dtend,
-        allDay: e.all_day === 1,
+        id: event.id,
+        title: event.title,
+        start: event.dtstart,
+        end: event.dtend,
+        allDay: event.all_day === 1,
+        // External events are fixed: no drag, no resize (AGENTS.md #2).
+        startEditable: draggable,
+        durationEditable: draggable,
         extendedProps: {
-          kind: e.kind,
-          venue: e.venue || "",
-          job: e.job || null,
+          kind: event.kind,
+          venue: event.venue || "",
+          job: event.job || null,
         },
       });
     });
-    setText(rangeEl, `${utcDay(view.currentStart)} – ${utcDay(view.currentEnd)}`);
-    updateProgress(events);
-    weekEmpty.hidden = events.length > 0;
-  } catch (err) {
-    toast("Failed to load week: " + err.message, "error");
+    rangeEl.textContent = `${fmtDay(view.currentStart)} – ${fmtDay(
+      new Date(view.currentEnd.getTime() - 86400000)
+    )}`;
+    updateProgress();
+    toggle(weekEmpty, events.length === 0);
+    weekEmpty.classList.toggle("flex", events.length === 0);
+  } catch (error) {
+    toast(`Failed to load week: ${error.message}`, "error");
   }
 }
 
-function updateProgress(events) {
-  let plannedMin = 0;
-  let doneMin = 0;
-  events.forEach((e) => {
-    const job = e.extendedProps.job;
+function updateProgress() {
+  let planned = 0;
+  let done = 0;
+  events.forEach((event) => {
+    const job = event.job;
     if (!job) return;
-    const mins = job.duration_min || 0;
-    plannedMin += mins;
-    if (job.status === "done") doneMin += mins;
+    const minutes = job.duration_min || 0;
+    planned += minutes;
+    if (job.status === "done") done += minutes;
   });
-  if (plannedMin === 0) {
-    progressWrap.hidden = true;
+  if (planned === 0) {
+    hide(progressWrap);
+    progressWrap.classList.remove("flex");
     return;
   }
-  progressWrap.hidden = false;
-  const pct = Math.round((doneMin / plannedMin) * 100);
-  progressBar.style.width = `${pct}%`;
-  setText(progressText, `${(doneMin / 60).toFixed(1)}h / ${(plannedMin / 60).toFixed(1)}h`);
+  show(progressWrap);
+  progressWrap.classList.add("flex");
+  progressBar.style.width = `${Math.round((done / planned) * 100)}%`;
+  progressText.textContent = `${fmtHours(done / 60)} / ${fmtHours(planned / 60)}`;
 }
 
-async function tickJob(jobId) {
-  try {
-    await api(`jobs/${jobId}/complete`, { method: "POST" });
-    closePopover();
-    loadEvents();
-    toast("Job marked done", "success");
-  } catch (err) {
-    toast("Failed: " + err.message, "error");
-  }
+function closePopover() {
+  hide(popover);
 }
 
-async function moveJob(jobId, startIso, endIso) {
-  try {
-    await api(`jobs/${jobId}/move`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: `slot_start=${encodeURIComponent(startIso)}&slot_end=${encodeURIComponent(endIso)}`,
-    });
-    toast("Job rescheduled", "success");
-    loadEvents();
-  } catch (err) {
-    toast("Can't move there: " + err.message, "error");
-  }
-}
-
-function openPopover(job, anchorRect) {
-  closePopover();
-  currentJobId = job.id;
-  popover.hidden = false;
+function openPopover(event, anchor) {
+  const job = event.extendedProps.job;
+  if (!job) return;
   popover.innerHTML = "";
-  const close = document.createElement("button");
-  close.className = "absolute right-2 top-2 text-slate-400 hover:text-slate-700 text-xs";
-  close.textContent = "✕";
-  close.onclick = closePopover;
-  popover.appendChild(close);
+  popover.appendChild(
+    el("div", "font-semibold mb-1 pr-6 truncate", event.title || "Study job")
+  );
+  popover.appendChild(
+    el(
+      "div",
+      "text-xs text-slate-500",
+      `${fmtDay(event.start)} ${fmtTime(event.start)}–${fmtTime(event.end)} · ${job.duration_min} min`
+    )
+  );
+  popover.appendChild(
+    el(
+      "div",
+      "text-xs text-slate-500 mb-2",
+      job.kind === "revision" ? `Revision R${job.revision_round}` : "Learn job"
+    )
+  );
+  if (job.topic_name) popover.appendChild(el("div", "text-xs text-slate-500", job.topic_name));
+  if (job.status === "conflicted") {
+    popover.appendChild(
+      el("div", "text-xs text-rose-600 font-medium mt-1", "No free slot — re-plan or reschedule")
+    );
+  }
 
-  const title = document.createElement("div");
-  title.className = "font-semibold mb-1";
-  title.textContent = job.material_title || "Job";
-  popover.appendChild(title);
-
-  const line = document.createElement("div");
-  line.className = "text-xs text-slate-500 mb-3";
-  line.textContent = `${utcDay(job.slot_start)} ${utcTime(job.slot_start)}–${utcTime(job.slot_end)} · ${job.duration_min}m`;
-  popover.appendChild(line);
-
-  const kind = document.createElement("div");
-  kind.className = "text-xs text-slate-500 mb-3";
-  kind.textContent = job.kind === "revision" ? `Revision R${job.revision_round}` : "Learn job";
-  popover.appendChild(kind);
-
-  const actions = document.createElement("div");
-  actions.className = "flex gap-2 pt-3 border-t border-slate-100";
-  const skip = document.createElement("button");
-  skip.className = "flex-1 py-1.5 rounded text-sm text-slate-600 border border-slate-200 hover:bg-slate-50";
-  skip.textContent = "Mark skipped";
+  const actions = el("div", "flex flex-col gap-1 mt-3 pt-3 border-t border-slate-100");
+  const openMaterial = el(
+    "button",
+    "text-left text-xs px-2 py-1.5 rounded hover:bg-slate-50 text-slate-700",
+    "Open material"
+  );
+  openMaterial.onclick = () => {
+    window.location.href = `/inbox?material=${encodeURIComponent(job.material_id)}`;
+  };
+  const skip = el(
+    "button",
+    "text-left text-xs px-2 py-1.5 rounded hover:bg-slate-50 text-slate-700",
+    "Mark skipped"
+  );
   skip.onclick = async () => {
     try {
-      await api(`jobs/${jobId}/skip`, { method: "POST" });
+      await api(`jobs/${job.id}/skip`, { method: "POST" });
       closePopover();
-      loadEvents();
       toast("Job skipped", "success");
-    } catch (err) {
-      toast("Failed: " + err.message, "error");
+      await loadEvents();
+    } catch (error) {
+      toast(error.message, "error");
     }
   };
-  const replan = document.createElement("button");
-  replan.className = "flex-1 py-1.5 rounded text-sm text-blue-600 hover:bg-blue-50";
-  replan.textContent = "Re-plan goal";
+  const replan = el(
+    "button",
+    "text-left text-xs px-2 py-1.5 rounded hover:bg-slate-50 text-blue-700",
+    "Re-plan goal"
+  );
   replan.onclick = async () => {
     try {
       await api(`goals/${job.goal_id}/replan`, { method: "POST" });
       closePopover();
-      loadEvents();
       toast("Goal re-planned", "success");
-    } catch (err) {
-      toast("Re-plan failed: " + err.message, "error");
+      await loadEvents();
+    } catch (error) {
+      toast(error.message, "error");
     }
   };
-  actions.appendChild(skip);
-  actions.appendChild(replan);
+  actions.append(openMaterial, skip, replan);
   popover.appendChild(actions);
 
-  // position below anchor
-  popover.style.left = Math.max(8, anchorRect.left) + "px";
-  popover.style.top = Math.min(anchorRect.bottom + 6, window.innerHeight - 260) + "px";
+  const rect = anchor.getBoundingClientRect();
+  show(popover);
+  const width = 288;
+  popover.style.left = `${Math.min(Math.max(8, rect.left), window.innerWidth - width - 12)}px`;
+  popover.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - 240)}px`;
 }
 
-function closePopover() {
-  popover.hidden = true;
-  currentJobId = null;
+function overlapsExternal(start, end, ignoreEventId) {
+  return calendar.getEvents().some((event) => {
+    if (event.extendedProps.kind !== "external") return false;
+    if (event.id === ignoreEventId) return false;
+    const eventStart = event.start ? event.start.getTime() : 0;
+    const eventEnd = event.end ? event.end.getTime() : eventStart;
+    return start < eventEnd && eventStart < end;
+  });
 }
 
-calendar = new Calendar(calendarEl, {
+calendar = new Calendar(document.getElementById("week-calendar"), {
   plugins: [timeGridPlugin, interactionPlugin],
   initialView: "timeGridWeek",
-  slotDuration: "00:30:00",
-  slotMinTime: "08:00:00",
-  slotMaxTime: "22:00:00",
-  height: "auto",
-  allDaySlot: false,
   headerToolbar: false,
+  height: "100%",
+  allDaySlot: false,
+  slotDuration: "00:30:00",
+  slotLabelInterval: "01:00",
+  slotLabelFormat: { hour: "2-digit", minute: "2-digit", hour12: false },
+  slotMinTime: "07:00:00",
+  slotMaxTime: "23:00:00",
+  scrollTime: "08:00:00",
+  nowIndicator: true,
   editable: true,
-  eventEditable: (info) => info.event.extendedProps.kind !== "external",
-  eventDragStart: (info) => {
-    if (info.event.extendedProps.kind === "external") return false;
-  },
-  eventAllow: (dropInfo) => {
-    // veto dragging a job onto an external event
-    if (draggedJobId) {
-      const overlapping = calendar.getEvents().some((e) => {
-        if (e.extendedProps.kind !== "external") return false;
-        const es = new Date(e.start),
-          ee = new Date(e.end);
-        const ds = new Date(dropInfo.date),
-          de = new Date(dropInfo.date);
-        de.setMinutes(de.getMinutes() + (draggedDuration || 50));
-        return ds < ee && es < de;
-      });
-      return !overlapping;
+  eventOverlap: false,
+  eventContent: (arg) => ({ domNodes: [cardFor(arg.event)] }),
+  eventAllow: (dropInfo, draggedEvent) => {
+    if (!draggedEvent) return true;
+    if (draggedEvent.extendedProps.kind === "external") return false;
+    const start = dropInfo.start ? dropInfo.start.getTime() : 0;
+    const end = dropInfo.end
+      ? dropInfo.end.getTime()
+      : start + (draggedJob?.duration_min || 50) * 60000;
+    if (overlapsExternal(start, end, draggedEvent.id)) {
+      toast("Can't schedule over an external event", "error");
+      return false;
     }
     return true;
   },
-  events: [],
-  eventContent: renderEvent,
-  eventClick: (info) => {
-    const job = info.event.extendedProps.job;
-    if (!job) return;
-    if (job.status === "done") {
-      closePopover();
-      return;
-    }
-    const rect = info.jsEvent
-      ? { left: info.jsEvent.pageX, top: info.jsEvent.pageY, bottom: info.jsEvent.pageY, width: 0 }
-      : { left: 100, top: 100, bottom: 120, width: 0 };
-    openPopover(job, rect);
+  eventDragStart: (info) => {
+    draggedJob = info.event.extendedProps.job || null;
+  },
+  eventDragStop: () => {
+    draggedJob = null;
   },
   eventDrop: async (info) => {
     const job = info.event.extendedProps.job;
-    if (!job || job.status === "done") return;
-    const startIso = info.event.start.toISOString();
-    const endIso = info.event.end ? info.event.end.toISOString() : null;
+    if (!job) {
+      info.revert();
+      return;
+    }
+    const start = info.event.start ? info.event.start.toISOString() : null;
+    const end = info.event.end
+      ? info.event.end.toISOString()
+      : new Date(new Date(start).getTime() + job.duration_min * 60000).toISOString();
     try {
       await api(`jobs/${job.id}/move`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `slot_start=${encodeURIComponent(startIso)}&slot_end=${encodeURIComponent(endIso || startIso)}`,
+        body: { slot_start: start, slot_end: end },
       });
       toast("Job rescheduled", "success");
-      loadEvents();
-    } catch (err) {
+      await loadEvents();
+    } catch (error) {
       info.revert();
-      toast("Can't move there: " + err.message, "error");
+      toast(error.message, "error");
     }
+  },
+  eventClick: (info) => {
+    if (info.event.extendedProps.kind === "external") {
+      toast(
+        `${info.event.title}${info.event.extendedProps.venue ? ` · ${info.event.extendedProps.venue}` : ""} — external event (fixed)`,
+        "info"
+      );
+      return;
+    }
+    openPopover(info.event, info.el);
   },
   datesSet: loadEvents,
 });
 calendar.render();
 
-let draggedJobId = null;
-let draggedDuration = 50;
-calendar.on("eventDragStart", (info) => {
-  const job = info.event.extendedProps.job;
-  draggedJobId = job ? job.id : null;
-  draggedDuration = job ? job.duration_min : 50;
+document.getElementById("btn-today").onclick = () => calendar.today();
+document.getElementById("btn-prev").onclick = () => calendar.prev();
+document.getElementById("btn-next").onclick = () => calendar.next();
+document.addEventListener("click", (event) => {
+  if (!popover.classList.contains("hidden") && !popover.contains(event.target)) closePopover();
 });
-calendar.on("eventDragStop", () => {
-  draggedJobId = null;
-  draggedDuration = 50;
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closePopover();
 });
 
-btnToday.onclick = () => calendar.today();
-document.addEventListener("click", (e) => {
-  if (!popover.hidden && !popover.contains(e.target)) closePopover();
-});
-
+initNav({ active: "Week", onDataChanged: loadEvents });
 loadEvents();

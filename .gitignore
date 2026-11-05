@@ -6,9 +6,15 @@ __pycache__/
 .venv/
 .token
 
+# test / tooling caches
+.pytest_cache/
+pytest-cache-files-*/
+web/.vite/
+
 # frontend build / deps
 web/dist/
 web/node_modules/
 
 # OS
 .DS_Store
+Thumbs.db
