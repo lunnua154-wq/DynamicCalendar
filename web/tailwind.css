@@ -6,3 +6,96 @@
   --color-revision: #7c3aed; /* violet-600 */
   --color-done: #94a3b8; /* slate-400 */
 }
+
+/* ------------------------------------------------------------------ calendar skin
+   FullCalendar injects its own stylesheet from the npm bundle, so the visual
+   integration lives here rather than in per-page markup. */
+
+.fc {
+  --fc-border-color: #e2e8f0;
+  --fc-today-bg-color: #eff6ff;
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: #f8fafc;
+  --fc-event-bg-color: transparent;
+  --fc-event-border-color: transparent;
+  font-family: inherit;
+  font-size: 0.8125rem;
+}
+
+.fc .fc-scrollgrid {
+  border-radius: 0.75rem;
+  overflow: hidden;
+  background: #fff;
+}
+
+.fc .fc-col-header-cell {
+  background: #f8fafc;
+}
+
+.fc .fc-col-header-cell-cushion,
+.fc .fc-daygrid-day-number {
+  color: #334155;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 6px 8px;
+}
+
+.fc .fc-day-today {
+  background: #eff6ff;
+}
+
+.fc .fc-daygrid-day-frame {
+  min-height: 6rem;
+}
+
+.fc .fc-event {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.fc .fc-daygrid-event {
+  white-space: normal;
+  margin-top: 2px;
+}
+
+.fc .fc-daygrid-event-harness {
+  margin-inline: 2px;
+}
+
+.fc .fc-timegrid-event {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.fc .fc-timegrid-slot {
+  height: 2rem;
+}
+
+.fc .fc-timegrid-slot-label-cushion {
+  font-size: 0.65rem;
+  color: #94a3b8;
+}
+
+.fc .fc-timegrid-col.fc-day-today {
+  background: #f1f7ff;
+}
+
+.fc .fc-timegrid-now-indicator-line {
+  border-color: #ef4444;
+}
+
+.fc .fc-more-link {
+  font-size: 0.7rem;
+  color: #2563eb;
+  padding-inline: 4px;
+}
+
+.fc .fc-popover {
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px rgb(15 23 42 / 0.15);
+  border-color: #e2e8f0;
+}
