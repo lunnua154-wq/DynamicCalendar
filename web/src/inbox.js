@@ -96,7 +96,7 @@ async function loadGoals() {
 async function uploadFiles(files) {
   if (!files.length) return;
   const form = new FormData();
-  for (const f of files) form.append("files[]", f);
+  for (const f of files) form.append("files", f);
   if (goalSelect.value) form.append("goal_id", goalSelect.value);
   try {
     await api("inbox/upload", { method: "POST", body: form });
