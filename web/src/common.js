@@ -72,9 +72,17 @@ export async function dialog(title, message) {
 }
 
 export async function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...options.headers };
+  const body = options.body;
+  const isFormData = body instanceof FormData;
+  const headers = { ...options.headers };
+  // JSON bodies: serialise + declare content type (unless already set, e.g.
+  // application/x-www-form-urlencoded). FormData: leave content-type alone so
+  // the browser attaches the multipart boundary, and never JSON-stringify it.
+  if (!isFormData && !headers["Content-Type"] && body !== null && typeof body === "object") {
+    headers["Content-Type"] = "application/json";
+  }
   const init = { ...options, headers };
-  if (init.body && typeof init.body === "object") {
+  if (!isFormData && init.body && typeof init.body === "object") {
     init.body = JSON.stringify(init.body);
   }
   const res = await fetch(`${API_BASE}/${path}`, init);
