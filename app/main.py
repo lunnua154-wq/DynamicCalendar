@@ -246,7 +246,10 @@ def skip_job(job_id: str):
 # --------------------------------------------------------------------------- inbox
 
 @app.post("/api/inbox/upload")
-async def inbox_upload(files: list[UploadFile] = File(...)):
+async def inbox_upload(
+    files: list[UploadFile] = File(...),
+    goal_id: str = Form(None),
+):
     """Upload + ingest files (M0 offline path): save, hash de-dup, convert to
     markdown, tag (offline fallback), create material + topic."""
     from markitdown import MarkItDown
@@ -300,11 +303,15 @@ async def inbox_upload(files: list[UploadFile] = File(...)):
             tags_json = json.dumps(tagged["tags"])
 
             # topic: each file its own topic in offline mode (cluster fallback)
-            topic_id = db.create_topic(conn, goal_id=None, name=tagged["tags"][0] if tagged["tags"] else filename)
+            topic_id = db.create_topic(
+                conn,
+                name=tagged["tags"][0] if tagged["tags"] else filename,
+                goal_id=goal_id,
+            )
 
             db.create_material(
                 conn,
-                goal_id=None,
+                goal_id=goal_id,
                 topic_id=topic_id,
                 filename=filename,
                 original_path=str(original_path),
