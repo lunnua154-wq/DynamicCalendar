@@ -71,6 +71,37 @@ def test_upload_without_files_422():
     assert r.status_code == 422, r.text
 
 
+def test_chat_accepts_json_body():
+    c = _client()
+    r = c.post("/api/chat", json={"message": "what's due this week?"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "reply" in body
+    assert body["llm"] in ("on", "off")
+
+
+def test_chat_missing_message_422():
+    c = _client()
+    r = c.post("/api/chat", json={})
+    assert r.status_code == 422, r.text
+    r = c.post("/api/chat", json={"message": "   "})
+    assert r.status_code == 422, r.text
+
+
+def test_upload_returns_ready_offline():
+    c = _client()
+    r = c.post(
+        "/api/inbox/upload",
+        files={"files": ("notes.md", b"# Notes\n\nSome study notes.", "text/markdown")},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["status"] == "ready"
+    assert body[0]["material_id"]
+    assert body[0]["filename"] == "notes.md"
+
+
 def test_ics_import_roundtrip():
     c = _client()
     with open("samples/sample_calendar.ics", "rb") as fh:
