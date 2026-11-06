@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS goals (
 
 CREATE TABLE IF NOT EXISTS topics (
   id         TEXT PRIMARY KEY,
-  goal_id    TEXT NOT NULL REFERENCES goals(id),
+  goal_id    TEXT NULL REFERENCES goals(id),   -- NULL = unattached (no goal yet)
   name       TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -377,7 +377,7 @@ def update_setting(
 # ---------------------------------------------------------------- materials & topics
 
 def create_topic(
-    conn: sqlite3.Connection, *, goal_id: str, name: str
+    conn: sqlite3.Connection, *, goal_id: str | None, name: str
 ) -> str:
     topic_id = new_id()
     conn.execute(
