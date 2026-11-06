@@ -1,5 +1,6 @@
 /** P3 — Inbox: chat + file drop zone + material list + topics. */
 
+import "../tailwind.css";
 import { api, toast, setText } from "./common.js";
 
 const chatList = document.getElementById("chat-list");
@@ -96,6 +97,7 @@ async function uploadFiles(files) {
   if (!files.length) return;
   const form = new FormData();
   for (const f of files) form.append("files[]", f);
+  if (goalSelect.value) form.append("goal_id", goalSelect.value);
   try {
     await api("inbox/upload", { method: "POST", body: form });
     toast(`${files.length} file(s) uploaded`, "success");

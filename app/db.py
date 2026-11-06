@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS goals (
 
 CREATE TABLE IF NOT EXISTS topics (
   id         TEXT PRIMARY KEY,
-  goal_id    TEXT NOT NULL REFERENCES goals(id),
+  goal_id    TEXT NULL REFERENCES goals(id),   -- NULL = unattached (no goal yet)
   name       TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -59,8 +59,10 @@ CREATE TABLE IF NOT EXISTS materials (
   tags           TEXT NULL,
   effort_hours   REAL NULL,
   status         TEXT NOT NULL DEFAULT 'new'
-                 CHECK (status IN ('new','tagged','duplicate','superseded')),
+                 CHECK (status IN ('new','processing','ready','tagged','duplicate','superseded','error')),
   duplicate_of   TEXT NULL REFERENCES materials(id),
+  superseded_by  TEXT NULL REFERENCES materials(id),  -- set when a newer version replaces this
+  status_reason  TEXT NULL,                           -- reason for error/superseded status
   created_at     TEXT NOT NULL
 );
 
@@ -377,7 +379,7 @@ def update_setting(
 # ---------------------------------------------------------------- materials & topics
 
 def create_topic(
-    conn: sqlite3.Connection, *, goal_id: str, name: str
+    conn: sqlite3.Connection, *, name: str, goal_id: str | None = None
 ) -> str:
     topic_id = new_id()
     conn.execute(
@@ -390,6 +392,7 @@ def create_topic(
 def create_material(
     conn: sqlite3.Connection,
     *,
+    material_id: str | None = None,
     goal_id: str | None,
     topic_id: str | None,
     filename: str,
@@ -402,7 +405,7 @@ def create_material(
     status: str = "new",
     duplicate_of: str | None = None,
 ) -> str:
-    material_id = new_id()
+    material_id = material_id or new_id()
     conn.execute(
         """
         INSERT INTO materials
@@ -432,6 +435,20 @@ def create_material(
 def list_materials(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM materials ORDER BY created_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_topics(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT t.id, t.goal_id, t.name, t.created_at,
+               COUNT(m.id) AS file_count
+        FROM topics t
+        LEFT JOIN materials m ON m.topic_id = t.id
+        GROUP BY t.id, t.goal_id, t.name, t.created_at
+        ORDER BY t.created_at DESC
+        """
     ).fetchall()
     return [dict(r) for r in rows]
 

@@ -24,9 +24,9 @@
     </div>
   </header>
 
-  <div class="flex flex-1 overflow-hidden">
+  <div class="flex flex-1 overflow-hidden flex-col md:flex-row">
     <!-- left: chat -->
-    <div class="w-96 border-r border-slate-200 bg-white flex flex-col">
+    <div class="w-full md:w-96 border-b md:border-b-0 md:border-r border-slate-200 bg-white flex flex-col shrink-0 max-h-[45vh] md:max-h-none">
       <div class="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
         <span class="font-semibold">Chat</span>
         <span id="llm-badge" class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded">(LLM off)</span>
