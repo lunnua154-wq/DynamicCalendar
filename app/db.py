@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS materials (
   status         TEXT NOT NULL DEFAULT 'new'
                  CHECK (status IN ('new','tagged','duplicate','superseded')),
   duplicate_of   TEXT NULL REFERENCES materials(id),
+  superseded_by  TEXT NULL REFERENCES materials(id),  -- set when a newer version replaces this
+  status_reason  TEXT NULL,                           -- reason for error/superseded status
   created_at     TEXT NOT NULL
 );
 
@@ -377,7 +379,7 @@ def update_setting(
 # ---------------------------------------------------------------- materials & topics
 
 def create_topic(
-    conn: sqlite3.Connection, *, goal_id: str | None, name: str
+    conn: sqlite3.Connection, *, name: str, goal_id: str | None = None
 ) -> str:
     topic_id = new_id()
     conn.execute(
@@ -432,6 +434,20 @@ def create_material(
 def list_materials(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM materials ORDER BY created_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_topics(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT t.id, t.goal_id, t.name, t.created_at,
+               COUNT(m.id) AS file_count
+        FROM topics t
+        LEFT JOIN materials m ON m.topic_id = t.id
+        GROUP BY t.id, t.goal_id, t.name, t.created_at
+        ORDER BY t.created_at DESC
+        """
     ).fetchall()
     return [dict(r) for r in rows]
 
