@@ -111,7 +111,7 @@ Invariants: **completed jobs are never touched. External events are never touche
 
 ### Frontend — Vite + Tailwind + FullCalendar (vanilla JS, **no framework**)
 - 3 HTML pages + shared vanilla JS (easy to manage, matches "I don't want too many pages")
-- `FullCalendar` v6.1 (MIT, the last release line that ships vanilla-JS packages) for month + week views — checkbox cards via `eventContent`, drag-reschedule via `eventDrop`, drop veto via `eventAllow` (never onto external events)
+- `FullCalendar` v7 standard (MIT) for month + week views — the most-used calendar component on the web; checkbox cards via `eventContent`, drag-reschedule via `eventDrop`, drop veto via `eventAllow` (never onto external events)
 - `Tailwind CSS` for all styling (the officially blessed theming path — "styled entirely by your own CSS or Tailwind")
 - `Vite` for dev + build (built `web/dist/` served by FastAPI) — the only build step in the repo
 - `fetch` for API calls (no htmx needed)
@@ -183,11 +183,6 @@ dynacalendar/
 | **M2** | LLM assistant: chat + auto-tag / de-dup / cluster of dropped files; endpoint config | yes |
 | **M3** | Dynamic engine: goals, allocation, spaced revisions, checkbox → live recompute, week-view checkboxes + drag-reschedule | no (estimates from M2) |
 | **M4** | Progress stats, Cloudflare OCR for scanned PDFs, Docker hardening, tests *(ICS export = future feature)* | optional |
-
-**Shipped:** M0 and M1 (2026-11-05). The M3 engine pieces (goals, allocation, spaced
-revisions, checkbox → live recompute, week-view checkboxes + drag-reschedule) shipped
-alongside them; `README.md` carries the current status and `docs/TESTING.md` the green
-test matrix.
 
 ---
 

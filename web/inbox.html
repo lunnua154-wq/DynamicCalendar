@@ -4,65 +4,80 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>DynaCalendar · Inbox</title>
+<link rel="modulepreload" href="./src/inbox.js" />
 </head>
-<body class="h-screen flex flex-col bg-slate-50 text-slate-900">
-  <header class="border-b border-slate-200 bg-white sticky top-0 z-20 shrink-0">
-    <div class="flex items-center justify-between gap-3 px-6 py-3">
+<body class="h-screen bg-slate-50 text-slate-900">
+  <header class="border-b border-slate-200 bg-white sticky top-0 z-20">
+    <div class="flex items-center justify-between px-6 py-3">
       <div class="flex items-center gap-3">
         <span class="font-bold text-lg tracking-tight">DynaCalendar</span>
         <span class="text-sm text-slate-500">Inbox</span>
       </div>
       <div class="flex items-center gap-2">
-        <div id="nav-tabs" class="hidden md:flex gap-1 border border-slate-200 rounded-lg overflow-hidden"></div>
-        <button id="btn-settings" class="p-2 rounded text-slate-500 hover:bg-slate-100" title="Settings" aria-label="Settings">⚙</button>
+        <div class="hidden md:flex gap-1 border border-slate-200 rounded-lg overflow-hidden">
+          <button class="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100" onclick="location.href='/'">Calendar</button>
+          <button class="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100" onclick="location.href='/week'">Week</button>
+          <button class="px-3 py-1 text-sm bg-blue-600 text-white">Inbox</button>
+        </div>
+        <button id="btn-settings" class="p-2 rounded text-slate-500 hover:bg-slate-100" title="Settings">⚙</button>
       </div>
     </div>
   </header>
 
-  <div class="flex flex-1 overflow-hidden flex-col md:flex-row">
-    <section class="w-full md:w-96 border-b md:border-b-0 md:border-r border-slate-200 bg-white flex flex-col shrink-0 max-h-[45vh] md:max-h-none">
+  <div class="flex flex-1 overflow-hidden">
+    <!-- left: chat -->
+    <div class="w-96 border-r border-slate-200 bg-white flex flex-col">
       <div class="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
         <span class="font-semibold">Chat</span>
-        <span id="llm-badge" class="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">(LLM off)</span>
+        <span id="llm-badge" class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded">(LLM off)</span>
       </div>
       <div id="chat-list" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
-      <form id="chat-form" class="border-t border-slate-200 p-3 flex gap-2">
-        <input id="chat-input" type="text" placeholder="Ask about your week…" autocomplete="off"
-          class="flex-1 border border-slate-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        <button id="chat-send" type="submit" class="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700" aria-label="Send">→</button>
-      </form>
-    </section>
+      <div class="border-t border-slate-200 p-3 flex gap-2">
+        <input
+          id="chat-input"
+          type="text"
+          placeholder="Message…"
+          class="flex-1 border border-slate-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          id="chat-send"
+          class="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700"
+        >
+          &rarr;
+        </button>
+      </div>
+    </div>
 
-    <section class="flex-1 flex flex-col overflow-hidden">
-      <div class="px-6 py-3 border-b border-slate-200 flex items-center gap-3">
-        <label for="goal-select" class="text-sm text-slate-500">Uploads attach to</label>
-        <select id="goal-select" class="text-sm border border-slate-300 rounded px-2 py-1.5 bg-white"></select>
+    <!-- right: inbox -->
+    <div class="flex-1 flex flex-col">
+      <div class="px-6 py-3 border-b border-slate-200 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span class="text-sm text-slate-500">Goal</span>
+          <select id="goal-select" class="text-sm border border-slate-300 rounded px-2 py-1.5 bg-white"></select>
+        </div>
       </div>
       <div class="flex-1 overflow-y-auto p-6">
         <div class="mb-5">
-          <div id="drop-zone" class="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center text-slate-500 bg-white hover:border-blue-500 hover:bg-blue-50 transition-colors cursor-pointer">
+          <div
+            id="drop-zone"
+            class="border-2 border-dashed border-slate-300 rounded-xl p-10 text-center text-slate-500 hover:border-blue-500 hover:bg-blue-50 transition"
+          >
             <p class="font-medium">Drop files here — just dump everything in</p>
-            <p class="text-[11px] text-slate-400 mt-1">pdf, docx, pptx, xlsx, md, html, images…</p>
-            <p class="text-xs underline text-blue-600 mt-2">or click to browse</p>
+            <p class="text-[11px] text-slate-400">pdf, docx, pptx, images, html…</p>
+            <input id="file-input" type="file" multiple class="hidden" />
+            <button id="btn-browse" class="mt-2 text-xs underline text-blue-600">
+              or click to browse
+            </button>
           </div>
-          <input id="file-input" type="file" multiple class="hidden" />
         </div>
         <div id="file-list" class="space-y-2"></div>
         <div class="mt-7 border-t border-slate-200 pt-4">
-          <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Topics</h3>
+          <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            Topics
+          </h3>
           <div id="topics-strip" class="flex gap-2 flex-wrap"></div>
         </div>
       </div>
-    </section>
-  </div>
-
-  <div id="material-modal" class="hidden fixed inset-0 z-[60] bg-slate-900/50 backdrop-blur-sm items-center justify-center p-4">
-    <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
-      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-200">
-        <h2 id="material-title" class="font-semibold truncate"></h2>
-        <button id="material-close" class="text-slate-400 hover:text-slate-700" aria-label="Close">✕</button>
-      </div>
-      <pre id="material-body" class="flex-1 overflow-auto px-5 py-4 text-xs whitespace-pre-wrap font-mono text-slate-700"></pre>
     </div>
   </div>
   <script type="module" src="./src/inbox.js"></script>

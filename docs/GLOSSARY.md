@@ -20,8 +20,5 @@ The single vocabulary for this project. Use these terms in code, docs, commits, 
 | **Offline mode** | Operation with no LLM endpoint configured; every LLM skill takes its deterministic fallback. |
 | **LLM skill** | One named LLM capability: `tag`, `cluster`, `chat`, `tune_settings` (contracts in AGENTS.md). |
 | **Superseded** | A material status: an older version replaced by a newer one (v1 when v2 arrives). |
-| **Pinned job** | A pending job the user dragged by hand (`jobs.pinned = 1`); replans keep its slot instead of re-deriving it. |
-| **Processing** | The transient material status while markitdown converts and the tagger/clusterer runs; the Inbox polls until it settles. |
-| **Conflicted** | A revision round with no free slot before the horizon; surfaced in the UI rather than silently dropped. |
 | **Unattached material** | A material not linked to any goal/topic yet; still visible in the inbox. |
 | **Atomic tick** | The single transaction that marks a job done, schedules its revisions, and recomputes remaining work. |

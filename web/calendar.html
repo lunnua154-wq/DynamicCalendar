@@ -4,48 +4,95 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>DynaCalendar · Calendar</title>
+<link rel="modulepreload" href="./src/calendar.js" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.22/main.min.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fullcalendar/daygrid@6.1.22/main.min.css" />
 </head>
-<body class="h-screen flex flex-col bg-slate-50 text-slate-900">
-  <header class="border-b border-slate-200 bg-white sticky top-0 z-20 shrink-0">
-    <div class="flex items-center justify-between gap-3 px-6 py-3">
-      <div class="flex items-center gap-3 min-w-0">
+<body class="h-screen bg-slate-50 text-slate-900">
+  <header class="border-b border-slate-200 bg-white sticky top-0 z-20">
+    <div class="flex items-center justify-between px-6 py-3">
+      <div class="flex items-center gap-3">
         <span class="font-bold text-lg tracking-tight">DynaCalendar</span>
-        <span id="calendar-month" class="text-sm text-slate-500 whitespace-nowrap"></span>
+        <span id="calendar-month" class="text-sm text-slate-500">Nov 2026</span>
       </div>
       <div class="flex items-center gap-2">
-        <button id="btn-prev" class="p-1.5 rounded text-slate-500 hover:bg-slate-100" title="Previous month" aria-label="Previous month">◀</button>
-        <button id="btn-today" class="px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 bg-white hover:bg-slate-50">Today</button>
-        <button id="btn-next" class="p-1.5 rounded text-slate-500 hover:bg-slate-100" title="Next month" aria-label="Next month">▶</button>
-        <div id="nav-tabs" class="hidden md:flex gap-1 border border-slate-200 rounded-lg overflow-hidden"></div>
-        <button id="btn-settings" class="p-2 rounded text-slate-500 hover:bg-slate-100" title="Settings" aria-label="Settings">⚙</button>
-        <button id="btn-import" class="px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 bg-white hover:bg-slate-50">Import .ics</button>
-        <button id="btn-replan" class="px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Re-plan</button>
-        <input id="file-ics" type="file" accept=".ics,text/calendar" class="hidden" />
+        <button id="btn-today" class="px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 bg-white hover:bg-slate-50">
+          Today
+        </button>
+        <div class="hidden md:flex gap-1 border border-slate-200 rounded-lg overflow-hidden">
+          <button class="px-3 py-1 text-sm bg-blue-600 text-white">Calendar</button>
+          <button
+            class="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100"
+            onclick="location.href='/week'"
+          >
+            Week
+          </button>
+          <button
+            class="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100"
+            onclick="location.href='/inbox'"
+          >
+            Inbox
+          </button>
+        </div>
+        <button
+          id="btn-settings"
+          class="p-2 rounded text-slate-500 hover:bg-slate-100"
+          title="Settings"
+        >
+          ⚙
+        </button>
+        <button
+          id="btn-import"
+          class="px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 bg-white hover:bg-slate-50"
+        >
+          Import .ics
+        </button>
+        <button
+          id="btn-replan"
+          class="px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 bg-white hover:bg-slate-50"
+        >
+          Re-plan
+        </button>
+        <input id="file-ics" type="file" accept=".ics" class="hidden" />
       </div>
-    </div>
-    <div id="exam-banner" class="hidden items-center gap-3 px-6 py-2 bg-amber-50 border-t border-amber-200 text-amber-900 text-sm">
-      <span id="exam-banner-text"></span>
-      <button id="btn-exam-create" class="ml-auto text-xs font-medium underline text-blue-700">Create goal</button>
-      <button id="btn-exam-dismiss" class="text-xs underline text-slate-500">Dismiss</button>
     </div>
   </header>
 
+  <div id="exam-banner" class="hidden px-6 py-2 bg-amber-50 border border-amber-200 text-amber-800 text-sm flex items-center gap-3">
+    <span id="exam-banner-text"></span>
+    <button id="btn-exam-create" class="ml-auto text-xs underline text-blue-600">
+      Create goal
+    </button>
+    <button id="btn-exam-dismiss" class="text-xs underline ml-2 text-slate-500">
+      Dismiss
+    </button>
+  </div>
+
   <div class="flex flex-1 overflow-hidden">
-    <main class="flex-1 p-4 relative min-w-0 overflow-hidden">
+    <main class="flex-1 p-6 relative min-w-0">
       <div id="calendar" class="h-full"></div>
-      <div id="empty-state" class="hidden absolute inset-0 flex-col items-center justify-center text-slate-400 text-sm px-8 text-center">
-        No events yet. Import your calendar (.ics) to start — study jobs will appear around it.
+      <div
+        id="empty-state"
+        class="hidden absolute inset-0 flex flex-col items-center justify-center text-slate-400 text-sm"
+      >
+        No events yet. Import your calendar (.ics) to start — study jobs will
+        appear around it.
       </div>
     </main>
 
-    <aside id="day-panel" class="hidden w-80 border-l border-slate-200 bg-white flex-col shadow-xl shrink-0">
+    <aside
+      id="day-panel"
+      class="hidden w-80 border-l border-slate-200 bg-white flex flex-col shadow-lg"
+    >
       <div class="flex items-center justify-between px-4 py-3 border-b border-slate-200">
-        <h2 id="day-panel-date" class="font-semibold text-sm"></h2>
-        <button id="btn-day-close" class="text-slate-400 hover:text-slate-700" aria-label="Close day panel">✕</button>
+        <h2 id="day-panel-date" class="font-semibold"></h2>
+        <button id="btn-day-close" class="text-slate-400 hover:text-slate-700">
+          ✕
+        </button>
       </div>
       <div id="day-panel-list" class="overflow-y-auto flex-1 p-3 space-y-2"></div>
       <div class="px-4 py-3 border-t border-slate-200 bg-slate-50 text-xs text-slate-500">
-        Tick a job to mark it done — revision jobs appear on the Week page.
+        Tick a job to mark done &rarr; revisions appear on the Week page.
       </div>
     </aside>
   </div>

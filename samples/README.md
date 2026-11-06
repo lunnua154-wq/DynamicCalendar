@@ -5,7 +5,7 @@ unit tests, the demo seed, and the walkthrough in `docs/WALKTHROUGH.md` all use 
 
 | File | Feeds | Expected outcome |
 |---|---|---|
-| `sample_calendar.ics` | ICS import tests, exam detection | 10 events imported (the weekly RRULE event is imported at its DTSTART instance — expansion is post-M4); exactly 1 event tagged `EXAM` (MATH2001 Final, 18 Dec); 1 all-day event (books due) |
+| `sample_calendar.ics` | ICS import tests, exam detection | 10 events imported (9 concrete + 1 RRULE-expanded within horizon); exactly 1 event tagged `EXAM` (MATH2001 Final, 18 Dec); 1 all-day event (books due) |
 | `materials/math_chapter3_limits.md` | ingest + clustering | topic "Limits & Continuity" (LLM mode) / own topic (offline) |
 | `materials/math_chapter3_limits_v2.md` | **version detection** | LLM mode: "version update of" the v1 file → v1 marked `superseded`. Offline mode: kept as a separate topic (hashes differ) |
 | `materials/problem_set_3.md` | ingest + effort estimate | topic "Problem Set 3"; effort estimate > notes (it's exercises) |

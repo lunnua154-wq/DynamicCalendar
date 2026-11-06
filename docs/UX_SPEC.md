@@ -9,10 +9,7 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
 - **Top navigation** (all pages): app name "DynaCalendar" left; tabs `Calendar` `Week` `Inbox`
   (active tab underlined); right side: settings gear (opens settings panel).
 - **Toasts**: top-right, stack, auto-dismiss 4 s. Kinds: `info` / `success` / `error`.
-- **Loading**: every long action disables its button and shows a busy label (`Importing…`,
-  `Save`); lists are re-fetched with a toast on failure. No blank pages, no skeleton rows (M0).
-- **Times and dates** are rendered in **English 24-hour** format (`en-GB`, e.g. `18:50`,
-  `Thu 5 Nov`, `November 2026`) regardless of the browser locale — the UI language is English.
+- **Loading**: skeleton rows/bars; never a blank page.
 - **Error handling**: every failed API call → error toast with the server's message;
   UI state is never left half-updated (revert optimistic changes).
 - **Colors** (theme tokens): `external` = slate/blue (solid), `study` = amber (outline card),
@@ -51,14 +48,14 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
   - external entries: time range + **venue** + title — read-only (no controls)
   - job entries: **checkbox** + title + duration + kind badge
   - ticking a job here behaves exactly like P2 (one atomic API call, optimistic update)
-- **Import .ics**: file picker → button shows `Importing…` → success toast `Imported N events (M unchanged)`
+- **Import .ics**: file picker → spinner → success toast `Imported N events (M skipped)`
   + calendar refresh. Invalid file → error toast with reason (e.g. "not an ICS file").
 - **Exam banner** (after an import that contains `EXAM`-tagged events and no goal is
   linked yet): amber banner under the header:
   `Exam detected: MATH2001 Final Exam — Fri 18 Dec 09:30 @ LT204   [Create goal] [Dismiss]`
   "Create goal" pre-fills title/deadline/venue from the event.
-- **Re-plan**: confirm dialog ("Recompute all pending future work?") → busy button →
-  toast with the count of moved jobs (no per-goal spinner; it is one round trip per goal).
+- **Re-plan**: confirm dialog ("Recompute all pending future work?") → spinner →
+  toast with count of moved jobs.
 - **Empty state** (no events at all): centered illustration-less message:
   `No events yet. Import your calendar (.ics) to start — study jobs will appear around it.`
 
@@ -138,10 +135,8 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
   - Each file row: name, **status chip** (`processing` spinner / `ready` / `duplicate` /
     `superseded` / `error` + reason), result line in human text
     (`new topic "X"` · `duplicate of Y` · `version update of Y`), tags as small chips,
-    effort with inline edit (number, hours), an **attach** select (which goal the material
-    belongs to), and row actions: `[Mark duplicate]` `[Mark superseded]` `[Restore]`
-    (user override, the inverse of the automatic call) and `[Open]` (modal with the
-    converted markdown).
+    effort with inline edit (number, hours), row actions: `[Dismiss]` (mark duplicate/
+    superseded — user override) `[Open]`.
   - Status updates: poll `GET /api/inbox/files` every 2 s while any row is `processing`
     (stop when all settle).
 - **Goal selector** (top-right): materials dropped while a goal is selected attach to it;

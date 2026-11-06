@@ -4,40 +4,52 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>DynaCalendar · Week</title>
+<link rel="modulepreload" href="./src/week.js" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.22/main.min.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fullcalendar/timegrid@6.1.22/main.min.css" />
 </head>
-<body class="h-screen flex flex-col bg-slate-50 text-slate-900">
-  <header class="border-b border-slate-200 bg-white sticky top-0 z-20 shrink-0">
-    <div class="flex items-center justify-between gap-3 px-6 py-3">
-      <div class="flex items-center gap-3 min-w-0">
-        <span class="font-bold text-lg tracking-tight">DynaCalendar</span>
-        <span id="week-range" class="text-sm text-slate-500 whitespace-nowrap"></span>
-      </div>
+<body class="h-screen bg-slate-50 text-slate-900">
+  <header class="border-b border-slate-200 bg-white sticky top-0 z-20">
+    <div class="flex items-center justify-between px-6 py-3">
       <div class="flex items-center gap-3">
-        <div id="progress-wrap" class="hidden items-center gap-2">
-          <div class="w-32 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-            <div id="progress-bar" class="h-full bg-emerald-500 transition-all duration-300" style="width:0%"></div>
-          </div>
-          <span id="progress-text" class="text-xs text-slate-500 whitespace-nowrap"></span>
+        <span class="font-bold text-lg tracking-tight">DynaCalendar</span>
+        <span id="week-range" class="text-sm text-slate-500">2 – 8 Nov 2026</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btn-today" class="px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 bg-white hover:bg-slate-50">
+          Today
+        </button>
+        <div class="hidden md:flex gap-1 border border-slate-200 rounded-lg overflow-hidden">
+          <button class="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100" onclick="location.href='/'">Calendar</button>
+          <button class="px-3 py-1 text-sm bg-blue-600 text-white">Week</button>
+          <button class="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100" onclick="location.href='/inbox'">Inbox</button>
         </div>
-        <button id="btn-prev" class="p-1.5 rounded text-slate-500 hover:bg-slate-100" title="Previous week" aria-label="Previous week">◀</button>
-        <button id="btn-today" class="px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 bg-white hover:bg-slate-50">Today</button>
-        <button id="btn-next" class="p-1.5 rounded text-slate-500 hover:bg-slate-100" title="Next week" aria-label="Next week">▶</button>
-        <div id="nav-tabs" class="hidden md:flex gap-1 border border-slate-200 rounded-lg overflow-hidden"></div>
-        <button id="btn-settings" class="p-2 rounded text-slate-500 hover:bg-slate-100" title="Settings" aria-label="Settings">⚙</button>
+        <button id="btn-settings" class="p-2 rounded text-slate-500 hover:bg-slate-100" title="Settings">⚙</button>
+        <div id="progress-wrap" class="hidden ml-6 flex items-center gap-2">
+          <div class="w-32 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+            <div id="progress-bar" class="h-full bg-blue-600" style="width:0%"></div>
+          </div>
+          <span id="progress-text" class="text-xs text-slate-500">0h / 0h</span>
+        </div>
       </div>
     </div>
   </header>
 
   <div class="flex flex-1 overflow-hidden">
-    <main class="flex-1 p-4 relative min-w-0 overflow-hidden">
+    <main class="flex-1 p-4 relative min-w-0">
       <div id="week-calendar" class="h-full"></div>
-      <div id="week-empty" class="hidden absolute inset-0 flex-col items-center justify-center text-slate-400 text-sm px-8 text-center">
-        Nothing planned for this week. Create a goal and drop materials in the Inbox.
+      <div
+        id="week-empty"
+        class="hidden absolute inset-0 flex flex-col items-center justify-center text-slate-400 text-sm"
+      >
+        Nothing planned for this week. Create a goal and drop materials in the
+        Inbox.
       </div>
     </main>
   </div>
 
-  <div id="job-popover" class="hidden fixed z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-4 w-72"></div>
+  <!-- job popover -->
+  <div id="job-popover" class="hidden fixed z-50 bg-white rounded-xl shadow-xl border border-slate-200 p-4 w-64"></div>
   <script type="module" src="./src/week.js"></script>
 </body>
 </html>

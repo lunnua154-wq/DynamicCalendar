@@ -1,9 +1,7 @@
 # Data model (SQLite, stdlib `sqlite3`, no ORM)
 
 All timestamps stored as **UTC ISO-8601** strings, e.g. `2026-11-04T01:30:00Z`.
-IDs are UUID4 text. Schema version: `PRAGMA user_version = 1` (a database with a
-different version is rejected with an instruction to delete `data/dynacalendar.db` —
-there is no released data to migrate yet).
+IDs are UUID4 text.
 
 ## Tables
 
@@ -14,13 +12,12 @@ events
   ics_uid       TEXT NULL          -- external only: source UID (re-import dedup)
   ics_rrule     TEXT NULL          -- external only: raw RRULE if present
   source        TEXT NULL          -- which .ics file it came from
-  title         TEXT NOT NULL      -- study/revision: filled in by the API from the material
+  title         TEXT NOT NULL
   dtstart       TEXT NOT NULL      -- UTC ISO-8601
   dtend         TEXT NOT NULL
   all_day       INTEGER NOT NULL DEFAULT 0
   venue         TEXT NULL          -- LOCATION (shown on P1/P2 for external)
   description   TEXT NULL
-  categories    TEXT NULL          -- JSON array (CATEGORIES); 'EXAM' drives the banner
   locked        INTEGER NOT NULL DEFAULT 0   -- 1 for external: engine never writes
 
 goals
@@ -33,7 +30,7 @@ goals
 
 topics
   id         TEXT PRIMARY KEY
-  goal_id    TEXT NULL REFERENCES goals(id)   -- NULL while a topic is unattached
+  goal_id    TEXT NOT NULL REFERENCES goals(id)
   name       TEXT NOT NULL
   created_at TEXT NOT NULL
 
@@ -48,11 +45,9 @@ materials
   summary        TEXT NULL                    -- llm.tag() (or fallback)
   tags           TEXT NULL                    -- JSON array of strings
   effort_hours   REAL NULL                    -- llm estimate, user-overridable
-  status         TEXT NOT NULL DEFAULT 'processing'
-                 CHECK (status IN ('processing','ready','duplicate','superseded','error'))
-  status_reason  TEXT NULL                    -- why an error/duplicate happened
-  duplicate_of   TEXT NULL REFERENCES materials(id)  -- byte-identical earlier file
-  superseded_by  TEXT NULL REFERENCES materials(id)  -- newer version that replaced this
+  status         TEXT NOT NULL DEFAULT 'new'
+                 CHECK (status IN ('new','tagged','duplicate','superseded'))
+  duplicate_of   TEXT NULL REFERENCES materials(id)
   created_at     TEXT NOT NULL
 
 jobs
@@ -66,7 +61,6 @@ jobs
                  CHECK (status IN ('pending','done','skipped','conflicted'))
   done_at        TEXT NULL
   revision_round INTEGER NOT NULL DEFAULT 0   -- 0=learn, 1..4=revision round n
-  pinned         INTEGER NOT NULL DEFAULT 0   -- 1 = moved by hand: replans keep it
   created_at     TEXT NOT NULL
 
 settings
@@ -83,19 +77,6 @@ chat_messages
   created_at  TEXT NOT NULL
 ```
 
-## Material lifecycle (M1 ingest)
-
-```
-upload ──► processing ──► ready            (converted, tagged, clustered)
-                      ├─► duplicate        (identical content_hash already stored)
-                      ├─► superseded       (a newer version replaced it)
-                      └─► error            (unsupported format / conversion failure)
-```
-
-`status_reason` carries the human sentence for `error` and `duplicate` rows. The
-Inbox row shows `result` computed by the API (`new topic "X"`, `duplicate of Y`,
-`version update of Y`, `unsupported format (.xyz)`).
-
 ## Default settings (placeholder "fake time" — dynamic, changeable)
 
 | key | default | bounds |
@@ -103,36 +84,26 @@ Inbox row shows `result` computed by the API (`new topic "X"`, `duplicate of Y`,
 | `daily_capacity_hours` | `4.0` | 0.5 – 12 |
 | `slot_minutes` | `50` | 15 – 120 |
 | `min_slot_minutes` | `30` | 15 – 120 |
-| `revision_intervals_days` | `[1,3,7,14]` | each 1 – 60, ascending and unique |
-| `utc_offset_minutes` | host offset at first run (e.g. `480`) | −840 – 840 |
+| `revision_intervals_days` | `[1,3,7,14]` | each 1 – 60, ascending |
 | `llm_base_url` | `""` (→ offline mode) | — |
 | `llm_model` | `""` | — |
 | `llm_api_key` | `""` | — |
 | `default_effort_hours` | `1.0` | 0.1 – 20 |
 
-`utc_offset_minutes` is applied only when the engine lays out a day: the study
-window is **08:00–22:00 local**, stored back as UTC. Storage and the API stay UTC;
-the browser renders in the viewer's local time.
-
 ## ICS mapping (import — the only write path to external events)
 
 | ICS | → | column |
 |---|---|---|
-| `UID` | → | `ics_uid` (re-import: update in place, skip when unchanged) |
+| `UID` | → | `ics_uid` (re-import: update same event, skip if unchanged) |
 | `SUMMARY` | → | `title` |
-| `DTSTART` / `DTEND` | → | UTC via `zoneinfo`; missing `DTEND` → `DURATION`, else +60 min (all-day: +1 day) |
+| `DTSTART` / `DTEND` | → | UTC via `zoneinfo` |
 | `LOCATION` | → | `venue` |
 | `DESCRIPTION` | → | `description` |
-| `CATEGORIES` | → | `categories` (JSON); `EXAM` (any case) surfaces a goal-deadline candidate |
-| `RRULE` | → | `ics_rrule` (raw). M0 imports the DTSTART instance only — expansion is post-M4 |
+| `RRULE` | → | `ics_rrule`; M0 expands a 30-day horizon into concrete events |
+| `CATEGORIES` contains `exam` (case-insens.) | → | surfaced as goal deadline candidate (auto-link if goal open) |
 
 ## Rules
-- `kind='external'` ⇒ `locked=1`; `db.delete_event` refuses locked rows, so the engine
-  has no write path to external events.
+- `kind='external'` ⇒ `locked=1`; engine code has no write path to locked rows (enforced in `db.py`).
 - `kind IN ('study','revision')` ⇒ exactly one `jobs` row (`event_id` unique in `jobs`).
 - A completed job keeps its event (history) — the calendar shows what actually happened.
-- `conflicted` revision rounds are derived state: each replan drops them and re-derives,
-  so they never pile up.
-- A replan reuses a pending job when the recomputed slot is identical (no ID churn);
-  only jobs whose slot actually changed are reported as `moved_jobs`.
 - Deletions are soft: materials → `superseded`; jobs → `skipped`; goals → `archived`.
