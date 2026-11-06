@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS materials (
   tags           TEXT NULL,
   effort_hours   REAL NULL,
   status         TEXT NOT NULL DEFAULT 'new'
-                 CHECK (status IN ('new','tagged','duplicate','superseded')),
+                 CHECK (status IN ('new','processing','ready','tagged','duplicate','superseded','error')),
   duplicate_of   TEXT NULL REFERENCES materials(id),
   superseded_by  TEXT NULL REFERENCES materials(id),  -- set when a newer version replaces this
   status_reason  TEXT NULL,                           -- reason for error/superseded status
@@ -392,6 +392,7 @@ def create_topic(
 def create_material(
     conn: sqlite3.Connection,
     *,
+    material_id: str | None = None,
     goal_id: str | None,
     topic_id: str | None,
     filename: str,
@@ -404,7 +405,7 @@ def create_material(
     status: str = "new",
     duplicate_of: str | None = None,
 ) -> str:
-    material_id = new_id()
+    material_id = material_id or new_id()
     conn.execute(
         """
         INSERT INTO materials
