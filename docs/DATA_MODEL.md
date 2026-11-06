@@ -30,7 +30,7 @@ goals
 
 topics
   id         TEXT PRIMARY KEY
-  goal_id    TEXT NOT NULL REFERENCES goals(id)
+  goal_id    TEXT NULL REFERENCES goals(id)   -- NULL = unattached topic
   name       TEXT NOT NULL
   created_at TEXT NOT NULL
 
@@ -46,8 +46,10 @@ materials
   tags           TEXT NULL                    -- JSON array of strings
   effort_hours   REAL NULL                    -- llm estimate, user-overridable
   status         TEXT NOT NULL DEFAULT 'new'
-                 CHECK (status IN ('new','tagged','duplicate','superseded'))
+                 CHECK (status IN ('new','processing','ready','tagged','duplicate','superseded','error'))
   duplicate_of   TEXT NULL REFERENCES materials(id)
+  superseded_by  TEXT NULL REFERENCES materials(id)   -- set when a newer version replaces this
+  status_reason  TEXT NULL                            -- reason for error/superseded status
   created_at     TEXT NOT NULL
 
 jobs
