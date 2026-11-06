@@ -391,7 +391,10 @@ def set_effort(material_id: str, hours: float = Form(...)):
 # --------------------------------------------------------------------------- chat
 
 @app.post("/api/chat")
-def chat(message: str = Form(...)):
+def chat(payload: dict[str, Any]):
+    message = payload.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(status_code=422, detail="message is required")
     conn = _get_conn()
     try:
         settings = parse_settings(db.list_settings(conn))
