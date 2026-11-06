@@ -41,19 +41,41 @@ def store_upload(
     ch = content_hash(raw)
     existing = db.find_material_by_hash(conn, ch)
     if existing is not None:
+        # Create a duplicate material record referencing the original so the
+        # caller gets a distinct row with status='duplicate'.
+        dup_id = db.new_id()
+        dup_original = originals_dir / f"{dup_id}_{filename}"
+        dup_original.write_bytes(raw)
+        material_id = db.create_material(
+            conn,
+            goal_id=existing["goal_id"],
+            topic_id=existing["topic_id"],
+            filename=filename,
+            original_path=str(dup_original),
+            markdown_path=existing["markdown_path"],
+            content_hash=ch,
+            summary=existing["summary"],
+            tags=existing["tags"],
+            effort_hours=existing["effort_hours"],
+            status="duplicate",
+            duplicate_of=existing["id"],
+        )
+        conn.commit()
         return {
             "status": "duplicate",
-            "material_id": existing["id"],
+            "material_id": material_id,
             "duplicate_of": existing["id"],
         }
 
     originals_dir.mkdir(parents=True, exist_ok=True)
     material_id = db.new_id()
-    original_path = originals_dir / f"{material_id}_{filename}"
+    suffix = Path(filename).suffix
+    original_path = originals_dir / f"{material_id}{suffix}"
     original_path.write_bytes(raw)
 
-    db.create_material(
+    material_id = db.create_material(
         conn,
+        material_id=material_id,
         goal_id=goal_id,
         topic_id=None,
         filename=filename,
@@ -72,8 +94,8 @@ def store_upload(
 
 def process_material(
     conn,
-    *,
     material_id: str,
+    *,
     markdown_dir: Path,
     client: Any,
     settings: Settings,
@@ -91,6 +113,19 @@ def process_material(
     filename = material["filename"]
     original_path = Path(material["original_path"])
     ch = material["content_hash"]
+
+    # --- validate file type -------------------------------------------------
+    SUPPORTED_EXTENSIONS = {".md", ".markdown", ".txt", ".html", ".htm",
+                            ".pdf", ".docx", ".pptx", ".csv", ".json", ".xml"}
+    if original_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        db.update_material(
+            conn,
+            material_id,
+            status="error",
+            status_reason=f"unsupported format ({original_path.suffix})",
+        )
+        conn.commit()
+        return dict(db.get_material(conn, material_id))
 
     # --- convert to markdown ------------------------------------------------
     try:
@@ -121,7 +156,11 @@ def process_material(
 
     # --- cluster ------------------------------------------------------------
     existing_topics = db.list_topics(conn)
-    existing_hashes = [m["content_hash"] for m in db.list_materials(conn)]
+    existing_hashes = [
+        m["content_hash"]
+        for m in db.list_materials(conn)
+        if m["id"] != material_id   # exclude self (just created as processing)
+    ]
     clustered = client.cluster(
         content_hash=ch,
         filename=filename,
@@ -158,23 +197,29 @@ def process_material(
             markdown_path=str(markdown_path),
         )
     elif relation == "version":
-        # New version of an existing material: supersede the old one.
-        prev_id = clustered.get("topic_id")
-        if prev_id is not None:
-            prev = db.get_material(conn, prev_id)
-            db.update_material(
-                conn,
-                prev_id,
-                status="superseded",
-                superseded_by=material_id,
-                status_reason=f"replaced by {filename}",
-            )
-            topic_id = prev["topic_id"]
-            if topic_id is not None:
-                topic_row = conn.execute(
-                    "SELECT name FROM topics WHERE id = ?", (topic_id,)
-                ).fetchone()
-                topic_name = topic_row["name"] if topic_row else None
+        # New version of an existing material: supersede the latest member of
+        # the given topic.
+        prev_topic_id = clustered.get("topic_id")
+        if prev_topic_id is not None:
+            prev_material = conn.execute(
+                """
+                SELECT * FROM materials
+                WHERE topic_id = ? AND status != 'superseded'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (prev_topic_id,),
+            ).fetchone()
+            if prev_material is not None:
+                db.update_material(
+                    conn,
+                    prev_material["id"],
+                    status="superseded",
+                    superseded_by=material_id,
+                    status_reason=f"replaced by {filename}",
+                )
+            topic_id = prev_topic_id
+            topic_name = clustered.get("topic_name", filename)
         else:
             topic_id = db.create_topic(
                 conn, name=clustered.get("topic_name", filename), goal_id=material["goal_id"]
@@ -213,9 +258,9 @@ def process_material(
 
 def attach_to_goal(
     conn,
-    *,
     material_id: str,
     goal_id: str,
+    *,
     now_iso: str,
 ) -> dict[str, Any]:
     """Link a ready material to a goal and (re)plan its study slots."""
