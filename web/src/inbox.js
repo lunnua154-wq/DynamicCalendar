@@ -1,7 +1,7 @@
 /** P3 — Inbox: chat + file drop zone + material list + topics. */
 
 import "../tailwind.css";
-import { api, toast, setText, initSettings, promptDialog, dialog } from "./common.js";
+import { api, toast, setText, initSettings, promptDialog, dialog, formatHours } from "./common.js";
 
 const chatList = document.getElementById("chat-list");
 const chatInput = document.getElementById("chat-input");
@@ -84,9 +84,86 @@ async function sendChat() {
     const res = await api("chat", { method: "POST", body: { message: text } });
     appendChat("assistant", res.reply);
     setLlmBadge(res.llm === "on");
+    if (Array.isArray(res.actions) && res.actions.length > 0) {
+      appendReceipts(res.actions);
+    }
   } catch (err) {
     appendChat("assistant", "Failed: " + err.message);
   }
+}
+
+const READ_LABELS = {
+  list_goals: "read goals",
+  list_jobs: "read jobs",
+  list_events: "read external events",
+  list_materials: "read materials",
+  get_stats: "read stats",
+};
+
+// Human summary for one chat tool result. Never injects result into innerHTML.
+function receiptLine(action) {
+  const tool = action && action.tool;
+  const args = action && action.args || {};
+  const result = action && action.result || {};
+  if (result && result.error) {
+    return { text: `${tool} failed: ${result.error}`, error: true };
+  }
+  const label = READ_LABELS[tool];
+  if (label) return { text: `⚙ ${label}` };
+  if (tool === "update_settings") {
+    const summary = settingsSummary(result);
+    if (summary) return { text: `⚙ ${summary}` };
+    return { text: `⚙ ${tool}` };
+  }
+  if (tool === "set_material_effort") {
+    return { text: `⚙ ${effortSummary(args, result)}` };
+  }
+  return { text: String(tool) };
+}
+
+function settingsSummary(result) {
+  const updated = result && result.updated;
+  if (!updated || typeof updated !== "object") return null;
+  const parts = Object.entries(updated)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => `${k} ${v}`);
+  return parts.length ? `settings → ${parts.join(", ")}` : null;
+}
+
+function effortSummary(args, result) {
+  const name = result.filename || args.material_id || "";
+  const hours = Number(args.hours);
+  const hs = Number.isFinite(hours) ? formatHours(hours) : "?h";
+  return `effort → ${name} → ${hs}`;
+}
+
+// Appends a left-aligned (assistant side) muted receipt row under the last
+// assistant bubble. Receipts are not persisted — live replies only.
+function appendReceipts(actions) {
+  if (!Array.isArray(actions) || actions.length === 0) return;
+  const wrapper = document.createElement("div");
+  wrapper.className = "flex justify-start";
+  const row = document.createElement("div");
+  row.className =
+    "text-[11px] text-slate-500 bg-slate-100 border border-slate-200 rounded px-2 py-1 space-y-0.5 max-w-[80%]";
+  let needsReplan = false;
+  actions.forEach((action) => {
+    const { text, error } = receiptLine(action);
+    const line = document.createElement("div");
+    line.className = error ? "text-rose-700" : "";
+    line.textContent = text;
+    row.appendChild(line);
+    if (action && action.tool === "update_settings") needsReplan = true;
+  });
+  if (needsReplan) {
+    const hint = document.createElement("div");
+    hint.className = "text-[10px] text-slate-400 pt-1";
+    hint.textContent = "press Re-plan to apply";
+    row.appendChild(hint);
+  }
+  wrapper.appendChild(row);
+  chatList.appendChild(wrapper);
+  chatList.scrollTop = chatList.scrollHeight;
 }
 
 chatSend.onclick = sendChat;

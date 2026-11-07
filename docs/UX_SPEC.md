@@ -140,6 +140,11 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
     then are the offline fallbacks (still useful: reads the calendar, reports schedules).
   - Chat answers about the calendar ("what's due this week?") are rendered with the
     same event chips as the day panel.
+  - Assistant replies may be followed by a compact action receipt row (⚙ lines, error
+    lines in rose) listing each tool the chat ran (e.g. `⚙ read goals`,
+    `settings → daily_capacity_hours 6, slot_minutes 50`, `⚙ effort → limits.pdf → 5h`).
+    Receipts appear for live replies only — they are not persisted and do not show
+    when history is reloaded.
 - **Right — inbox**:
   - Drop zone: drag & drop or click-to-browse, multiple files at once.
   - Each file row: name, **status chip** (`processing` spinner / `ready` / `duplicate` /
