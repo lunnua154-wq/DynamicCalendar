@@ -330,8 +330,12 @@ class LLMClient:
                         "content": json.dumps(result, default=str),
                     }
                 )
-        # Cap reached without a final answer: degrade gracefully.
-        return self._chat_fallback(message=message, context=context)
+        # Cap reached without a final answer: degrade gracefully, but keep
+        # the receipts — earlier rounds may already have changed settings.
+        out = self._chat_fallback(message=message, context=context)
+        if actions:
+            out["actions"] = actions
+        return out
 
     def _chat_fallback(self, *, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Genuinely useful offline reply: calendar-grounded, never just

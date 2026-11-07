@@ -463,7 +463,7 @@ def test_chat_tool_bad_args_recover(conn):
 
 def test_chat_tool_loop_cap(conn):
     fake = _scripted(
-        _response(tool_calls=[_tool_call("list_goals", "{}")]) for _ in range(5)
+        *[_response(tool_calls=[_tool_call("list_goals", "{}")]) for _ in range(5)]
     )
     c = LLMClient(_settings(llm_enabled=True))
     c._client = fake
@@ -476,7 +476,7 @@ def test_chat_tool_loop_cap(conn):
     )
     assert out["llm"] == "off"
     assert len(out["reply"]) > 0
-    assert "actions" not in out
+    assert [a["tool"] for a in out["actions"]] == ["list_goals"] * 5
 
 
 def test_chat_tools_offline_untouched():
