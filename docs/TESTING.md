@@ -21,6 +21,10 @@ thick enough to catch regressions. Fixtures: `samples/` (see its README — UIDs
 | E7 | revisions never silently dropped | block all candidate slots → job marked `conflicted`, surfaced (not vanished) |
 | E8 | deadline respected | effort > free time until deadline → remaining jobs land ON deadline day, none after |
 | E9 | pull-forward | small effort → next material scheduled immediately, not parked at deadline |
+| E10 | revisions are not duplicated | complete a learn job, replan 5× → exactly one job per round |
+| E11 | a done revision is never respawned | complete a revision, replan → no new job for that round |
+| E12 | pinned jobs survive replan | move a future job, replan → exact same slot |
+| E13 | revisions obey capacity/deadline | many learn completions on 1 h/day; no day over capacity, no revision after the deadline |
 
 ## ICS — `tests/test_ics_sync.py`
 - import `samples/sample_calendar.ics` → 10 rows, correct UTC conversion (UTC+8 fixture)
@@ -36,10 +40,28 @@ thick enough to catch regressions. Fixtures: `samples/` (see its README — UIDs
 
 ## API — `tests/test_api.py` (FastAPI TestClient)
 - every endpoint in `docs/API.md`: happy path + documented error codes
-- `POST /api/jobs/{id}/move` onto an external slot → **409**
-- `POST /api/jobs/{id}/complete` → single transaction observable: done + revisions + recompute in one response
+- JSON body **and** form-encoded body accepted for goals/move/dismiss/effort
+- `POST /api/jobs/{id}/move` onto an external slot or another job → **409**; moving
+  also pins the job (replan keeps the slot); milliseconds in ISO timestamps are accepted
+- `POST /api/jobs/{id}/complete` → single transaction observable: done + revisions +
+  recompute in one response; ticking an already-done job is a no-op
+- `POST /api/goals` with only `exam_event_id` derives the deadline from the exam event
+- upload with `goal_id` schedules jobs immediately (no manual replan)
+- duplicate upload creates a linked `duplicate` row, no new topic
+- topics: list with members, rename, merge (members move, no orphan topic)
 - `PUT /api/settings` out of bounds → **422**, value unchanged
 - upload without `files` part → **422**
+- chat returns calendar-grounded offline text and persists user/assistant messages
+
+## OCR — `tests/test_ocr.py`
+- disabled provider → `None` (no network)
+- enabled + mocked Workers AI response → text; error/timeout → `None`
+- PDF image extraction is best-effort and never raises
+
+## Delivery — `scripts/smoke_e2e.py`
+- one runnable acceptance script: fresh DB → import ICS → goal from exam → upload
+  samples → jobs appear → tick → revisions → move/pin → replan → chat → stats.
+  Exit code 0 = M5 offline demo passes.
 
 ## LLM — `tests/test_llm.py`
 - each skill: mocked-LLM happy path; mocked-LLM garbage output → bounds validation rejects → fallback used

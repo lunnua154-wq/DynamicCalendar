@@ -15,6 +15,8 @@ The single vocabulary for this project. Use these terms in code, docs, commits, 
 | **Slot** | A schedulable chunk of time (`slot_minutes`, default 50 min) inside a day's capacity that is not occupied by an external event. |
 | **Capacity** | `daily_capacity_hours` — how much study time the engine may use per day. A dynamic setting (placeholder 4 h). |
 | **Recompute / Re-plan** | The engine re-deriving all *pending future* job slots from current state. Deterministic, idempotent. |
+| **Pinned job** | A job the user dragged to a specific slot (`jobs.pinned=1`). Re-plan keeps it in place; only a conflicting external event can force it to move. |
+| **Conflicted revision** | A revision round that could not be placed before the goal deadline without overlapping a hard constraint; surfaced with status `conflicted`, never silently dropped. |
 | **Pull-forward** | When remaining work finishes ahead of the deadline, the next material is scheduled immediately so the plan stays current. |
 | **Re-import** | Importing a `.ics` again; updates external events by `UID` (the only way external events change). |
 | **Offline mode** | Operation with no LLM endpoint configured; every LLM skill takes its deterministic fallback. |

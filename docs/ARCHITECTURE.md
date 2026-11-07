@@ -20,9 +20,11 @@ upload (multipart)
   → save original + compute content_hash (sha256)
   → hash de-dup first (deterministic, always)
   → markitdown → data/materials/<id>.md
+  → optional OCR (Cloudflare, off by default) if the text layer is empty
   → llm.tag()      (offline fallback: filename stem + default effort)
-  → llm.cluster()  (offline fallback: new topic per file)
-  → engine.replan(goal)   # future slots only, never touches done work
+  → llm.cluster()  (offline fallback: hash de-dup only; new topic per file)
+  → attach to the selected goal (if any)
+  → engine.replan(goal)   # future slots only, never touches done work or pinned jobs
   → inbox status line updates: received → converting → tagged → done
 ```
 
@@ -37,8 +39,19 @@ POST /api/jobs/{id}/complete
     1. job.status = 'done', done_at = now
     2. if kind == 'learn': insert revision jobs at intervals
        settings.revision_intervals_days (default [1,3,7,14]) into free slots
+       (skip a round that already exists for this learn job)
     3. engine.replan(goal)  # redistribute remaining future work
   → response: {replanned: [...], revisions_added: [...]}
+```
+
+## Data flow — drag/move (P2 week)
+
+```
+POST /api/jobs/{id}/move {slot_start, slot_end}
+  → reject 409 if it overlaps an external event or another job, is before now,
+    or lands after the goal deadline
+  → write the event slot, set jobs.pinned = 1
+  → engine.replan(goal): pinned job stays, the rest reflows around it
 ```
 
 ## Engine algorithm (`engine.replan`)
@@ -50,7 +63,8 @@ output:  updated job slots
 free_slots(day)  = capacity_slots(day)
                − external events on that day
                − done jobs (they keep their slot as history)
-               − pending jobs kept in place (see rule 1)
+               − pinned jobs (user placements)
+               − pending jobs kept in place (today's date)
 
 capacity_slots(day) = settings.daily_capacity_hours (dynamic setting)
                       split into settings.slot_minutes chunks,
@@ -58,18 +72,22 @@ capacity_slots(day) = settings.daily_capacity_hours (dynamic setting)
 
 remaining = goal.effort_total − done_effort(goal)
 
-1. KEEP: pending jobs already placed on today's date stay put (no churn)
+1. KEEP: pending jobs on today's date and pinned jobs stay put (no churn)
 2. PLACE: next unallocated work (topic order → material order) fills
    free slots from today → goal.deadline, one slot at a time
 3. PULL-FORWARD: if remaining hits 0 before the deadline, the next
    material is scheduled immediately (the plan stays "full and current")
 4. REVISIONS: after a learn job completes, rounds at +1d/+3d/+7d/+14d;
-   if a round slot is occupied by an external event, push to the next
-   free slot (never silently drop — mark 'conflicted' and surface in UI)
+   existing done/skipped/pinned rounds are never duplicated; if a round slot
+   is occupied, push to the next free slot; never silently drop — mark
+   'conflicted' and surface in UI. Revisions respect the daily capacity and
+   the goal deadline.
 
 Invariants:
   - never overlaps external events
-  - done jobs never move
+  - done jobs and pinned jobs never move
+  - external events never change
+  - no duplicate revision round for the same learn job
   - idempotent: same (db, settings, now) in → same out
   - pure: no I/O except the single transaction at commit
 ```
@@ -88,6 +106,28 @@ re-derivation.
 ## LLM integration rules
 - All LLM I/O lives in `llm.py`; every skill has a deterministic fallback (offline mode).
 - LLM output is validated (bounds above) **before** persisting; rejected output → fallback.
+- LLM JSON may arrive wrapped in markdown fences — parsing strips fences before validation.
 - The LLM endpoint is configured via `settings` (base_url + model + key), so switching
-  providers (Cloudflare Workers AI / OpenAI / Ollama) is a config change, not code.
+  providers (Cloudflare Workers AI / OpenAI / Ollama / llama.cpp) is a config change, not code.
 - No key configured → `llm.enabled == False` → every skill takes its fallback path.
+- `chat` is given a compact **calendar context** (open goals, next 14 days of jobs and
+  external events, recent materials) so both the LLM and the offline fallback can answer
+  "what's due this week?".
+- `tune_settings` is only invoked when the message looks like a settings request; values
+  are bounds-validated and persisted with `updated_by='llm'`.
+
+## Progress stats
+
+`GET /api/stats` derives numbers from the job/material tables (no cache):
+`planned_min` (pending+done jobs in range), `done_min` (done), `progress`,
+`revisions_due`, per-day totals, and per-goal `total_effort_hours` vs
+`done_effort_hours`. The Week progress bar and the Calendar stats panel both read it.
+
+## OCR (optional, M4)
+
+`app/ocr.py` is a best-effort hook for scanned PDFs:
+- off by default (`ocr_provider = "off"`);
+- when `cloudflare` is configured, `pypdf` extracts embedded page images and each image
+  is sent to Cloudflare Workers AI (stdlib `urllib`, no new dependency);
+- any failure returns `None`, so ingest keeps the normal markitdown output and never fails.
+

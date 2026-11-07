@@ -15,7 +15,12 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
 - **Colors** (theme tokens): `external` = slate/blue (solid), `study` = amber (outline card),
   `revision` = violet (dashed border), `done` = faded + strikethrough.
 - **Desktop-first** (M0). Below 768 px: week grid collapses to a vertical list per day
-  (polish is M4, but nothing may break).
+  (M4/M5 polish) and must remain usable: no horizontal scroll, checkboxes reachable.
+- **Settings panel** (M2/M3/M4): LLM endpoint (`base_url`, `model`, `api_key`) **and**
+  dynamic settings (`daily_capacity_hours`, `slot_minutes`, `default_effort_hours`),
+  plus optional OCR (`ocr_provider`, `cf_account_id`, `cf_api_token`, `ocr_model`).
+  Values load from `GET /api/settings`; out-of-bounds values show the server error and
+  do not half-save. The LLM badge reads `LLM: on/off` from base URL + model.
 
 ---
 
@@ -53,7 +58,12 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
 - **Exam banner** (after an import that contains `EXAM`-tagged events and no goal is
   linked yet): amber banner under the header:
   `Exam detected: MATH2001 Final Exam — Fri 18 Dec 09:30 @ LT204   [Create goal] [Dismiss]`
-  "Create goal" pre-fills title/deadline/venue from the event.
+  "Create goal" pre-fills title/deadline/venue from the event and sends the real
+  `exam_event_id` to the API.
+- **Goal progress / stats panel** (M4/M5): a compact panel under the header or in the
+  right rail showing, per open goal, `done h / total h` with a bar, plus
+  `revisions due` for the next 7 days. Data comes from `GET /api/stats`.
+  Empty state: hidden until at least one goal exists.
 - **Re-plan**: confirm dialog ("Recompute all pending future work?") → spinner →
   toast with count of moved jobs.
 - **Empty state** (no events at all): centered illustration-less message:

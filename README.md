@@ -30,6 +30,7 @@ M2 in place: settings panel to configure the LLM endpoint (`llm_base_url` / `llm
 | `docs/TESTING.md` | Test strategy + engine invariants E1–E9 |
 | `docs/UX_SPEC.md` | Per-page UI spec (the contract for UI work) |
 | `docs/WALKTHROUGH.md` | One concrete end-to-end scenario using `samples/` |
+| `docs/DELIVERY.md` | M5 final-delivery acceptance checklist + demo script |
 
 ## Running
 

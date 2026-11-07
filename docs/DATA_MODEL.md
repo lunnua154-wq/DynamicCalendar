@@ -63,6 +63,8 @@ jobs
                  CHECK (status IN ('pending','done','skipped','conflicted'))
   done_at        TEXT NULL
   revision_round INTEGER NOT NULL DEFAULT 0   -- 0=learn, 1..4=revision round n
+  parent_job_id  TEXT NULL REFERENCES jobs(id) -- revision -> the completed learn job
+  pinned         INTEGER NOT NULL DEFAULT 0    -- 1 = user dragged it; replan keeps it
   created_at     TEXT NOT NULL
 
 settings
@@ -91,6 +93,11 @@ chat_messages
 | `llm_model` | `""` | — |
 | `llm_api_key` | `""` | — |
 | `default_effort_hours` | `1.0` | 0.1 – 20 |
+| `ocr_provider` | `"off"` | `off` \| `cloudflare` |
+| `cf_account_id` | `""` | — |
+| `cf_api_token` | `""` | — |
+| `ocr_model` | `"@cf/unum/uform-gen2-qwen-500m"` | — |
+| `ocr_min_chars` | `40` | 1 – 10000 |
 
 ## ICS mapping (import — the only write path to external events)
 
@@ -108,4 +115,8 @@ chat_messages
 - `kind='external'` ⇒ `locked=1`; engine code has no write path to locked rows (enforced in `db.py`).
 - `kind IN ('study','revision')` ⇒ exactly one `jobs` row (`event_id` unique in `jobs`).
 - A completed job keeps its event (history) — the calendar shows what actually happened.
+- A `pinned` job is a user placement: `replan` never moves or deletes it. Only
+  unpinned `pending`/`conflicted` jobs are re-derived.
+- A `revision` job records `parent_job_id`; replan uses it to avoid duplicating a
+  spaced-repetition round that is already done/skipped/pinned.
 - Deletions are soft: materials → `superseded`; jobs → `skipped`; goals → `archived`.

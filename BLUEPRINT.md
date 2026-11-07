@@ -183,6 +183,9 @@ dynacalendar/
 | **M2** | LLM assistant: chat + auto-tag / de-dup / cluster of dropped files; endpoint config | yes |
 | **M3** | Dynamic engine: goals, allocation, spaced revisions, checkbox → live recompute, week-view checkboxes + drag-reschedule | no (estimates from M2) |
 | **M4** | Progress stats, Cloudflare OCR for scanned PDFs, Docker hardening, tests *(ICS export = future feature)* | optional |
+| **M5** | **Final delivery:** complete the M3 dynamic loop end-to-end, production build, Docker compose demo, acceptance walkthrough, docs/status close-out | optional (LLM smoke test) |
+
+**M5 is the final delivery stage** (defined 2026-11-07 — the milestone list previously stopped at M4). It is not a new feature area: it is the acceptance gate that proves M0–M4 work together. See `docs/DELIVERY.md` for the exact checklist and demo script.
 
 ---
 
@@ -209,4 +212,4 @@ dynacalendar/
 
 ## 12. Document set
 
-`BLUEPRINT.md` · `AGENTS.md` · `CONTRIBUTING.md` · `docs/ARCHITECTURE.md` · `docs/DATA_MODEL.md` · `docs/API.md` · `docs/STYLE.md` · `docs/DECISIONS.md` · `docs/GLOSSARY.md` · `docs/TESTING.md` · `docs/UX_SPEC.md` · `docs/WALKTHROUGH.md` · `README.md`
+`BLUEPRINT.md` · `AGENTS.md` · `CONTRIBUTING.md` · `docs/ARCHITECTURE.md` · `docs/DATA_MODEL.md` · `docs/API.md` · `docs/STYLE.md` · `docs/DECISIONS.md` · `docs/GLOSSARY.md` · `docs/TESTING.md` · `docs/UX_SPEC.md` · `docs/WALKTHROUGH.md` · `docs/DELIVERY.md` · `README.md`
