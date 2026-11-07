@@ -30,6 +30,12 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "llm_model": "",
     "llm_api_key": "",
     "default_effort_hours": "1.0",
+    # Cloudflare OCR (M4) — off by default; opt-in via settings.
+    "ocr_provider": "off",
+    "cf_account_id": "",
+    "cf_api_token": "",
+    "ocr_model": "@cf/unum/uform-gen2-qwen-500m",
+    "ocr_min_chars": "40",
 }
 
 STUDY_WINDOW_START_HOUR = 8
@@ -46,10 +52,25 @@ class Settings:
     llm_model: str
     llm_api_key: str
     default_effort_hours: float
+    # Cloudflare OCR (M4) — off by default; opt-in via settings.
+    ocr_provider: str = "off"
+    cf_account_id: str = ""
+    cf_api_token: str = ""
+    ocr_model: str = "@cf/unum/uform-gen2-qwen-500m"
+    ocr_min_chars: int = 40
 
     @property
     def llm_enabled(self) -> bool:
         return bool(self.llm_base_url and self.llm_model)
+
+    @property
+    def ocr_enabled(self) -> bool:
+        """True only when Cloudflare OCR is configured with credentials."""
+        return (
+            self.ocr_provider == "cloudflare"
+            and bool(self.cf_account_id)
+            and bool(self.cf_api_token)
+        )
 
 
 def validate_capacity_hours(value: float) -> float:
@@ -110,5 +131,14 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
         llm_api_key=_decode_setting(values.get("llm_api_key", "")),
         default_effort_hours=float(
             values.get("default_effort_hours", DEFAULT_SETTINGS["default_effort_hours"])
+        ),
+        ocr_provider=_decode_setting(
+            values.get("ocr_provider", DEFAULT_SETTINGS["ocr_provider"])
+        ),
+        cf_account_id=_decode_setting(values.get("cf_account_id", "")),
+        cf_api_token=_decode_setting(values.get("cf_api_token", "")),
+        ocr_model=_decode_setting(values.get("ocr_model", DEFAULT_SETTINGS["ocr_model"])),
+        ocr_min_chars=int(
+            values.get("ocr_min_chars", DEFAULT_SETTINGS["ocr_min_chars"])
         ),
     )
