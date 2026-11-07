@@ -156,6 +156,8 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
     (stop when all settle).
 - **Goal selector** (top-right): materials dropped while a goal is selected attach to it;
   `Unattached` is a valid state — shown as a chip on the row.
+  - Beside it, a title + deadline input and `New goal` button create a goal via
+    `POST /api/goals` (deadline required) and select it in the selector.
 - **Topics strip** (bottom): each topic = name + file count + actions `[merge ▾]` `[rename]`;
   merging = pick target topic, members re-attach, re-plan triggered.
 - **Errors**: unsupported file type → row `error` + `unsupported format (xxx)` — the row

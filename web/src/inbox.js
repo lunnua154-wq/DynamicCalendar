@@ -8,6 +8,9 @@ const chatInput = document.getElementById("chat-input");
 const chatSend = document.getElementById("chat-send");
 const llmBadge = document.getElementById("llm-badge");
 const goalSelect = document.getElementById("goal-select");
+const newGoalTitle = document.getElementById("new-goal-title");
+const newGoalDeadline = document.getElementById("new-goal-deadline");
+const btnNewGoal = document.getElementById("btn-new-goal");
 const dropZone = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
 const btnBrowse = document.getElementById("btn-browse");
@@ -171,6 +174,11 @@ chatInput.onkeydown = (e) => {
   if (e.key === "Enter") sendChat();
 };
 
+btnNewGoal.onclick = createGoal;
+newGoalTitle.onkeydown = (e) => {
+  if (e.key === "Enter") createGoal();
+};
+
 async function loadGoals() {
   try {
     const goals = await api("goals");
@@ -183,6 +191,32 @@ async function loadGoals() {
     });
   } catch (err) {
     toast("Failed to load goals: " + err.message, "error");
+  }
+}
+
+async function createGoal() {
+  const title = newGoalTitle.value.trim();
+  if (!title) {
+    toast("Enter a goal title", "error");
+    return;
+  }
+  const deadline = newGoalDeadline.value;
+  if (!deadline) {
+    toast("pick a deadline", "error");
+    return;
+  }
+  try {
+    const res = await api("goals", {
+      method: "POST",
+      body: { title, deadline: `${deadline}T00:00:00Z` },
+    });
+    toast("Goal created", "success");
+    newGoalTitle.value = "";
+    newGoalDeadline.value = "";
+    await loadGoals();
+    if (res.id) goalSelect.value = String(res.id);
+  } catch (err) {
+    toast(err.message, "error");
   }
 }
 
