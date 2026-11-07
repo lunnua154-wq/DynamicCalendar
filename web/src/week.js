@@ -1,11 +1,12 @@
-/** P2 — Week (time grid) with drag-reschedule, checkboxes, progress bar. */
+/** P2 — Week (time grid) with drag-reschedule, checkboxes, progress bar.
+ *  Below 768 px the grid is replaced by a vertical day-list fallback. */
 
 import { Calendar } from "@fullcalendar/core";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/timegrid";
 import "../tailwind.css";
-import { api, toast, dialog, utcTime, utcDay, setText, initSettings } from "./common.js";
+import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings } from "./common.js";
 
 const calendarEl = document.getElementById("week-calendar");
 const rangeEl = document.getElementById("week-range");
@@ -17,25 +18,56 @@ const btnSettings = document.getElementById("btn-settings");
 const popover = document.getElementById("job-popover");
 const weekEmpty = document.getElementById("week-empty");
 
+const listEl = document.createElement("div");
+listEl.id = "week-list";
+listEl.className = "hidden h-full overflow-y-auto p-4";
+calendarEl.after(listEl);
+
 let calendar;
 let currentJobId = null;
+// Declared here, before eventAllow / eventDrop reference them.
+let draggedJobId = null;
+let draggedDuration = 50;
+let pinnedJobs = new Set(); // jobs moved by the user this session (pin indicator)
+let isMobile = false;
+let eventsCache = [];
+// job id -> checkbox element, for optimistic ticks across grid + mobile list
+const jobCbById = new Map();
+
+const today = new Date();
+today.setHours(0, 0, 0, 0);
 
 function isoDate(d) {
   return d.toISOString().slice(0, 10);
+}
+
+// ISO seconds, no milliseconds: YYYY-MM-DDTHH:MM:SSZ
+function isoSeconds(d) {
+  return d.toISOString().slice(0, 19) + "Z";
+}
+
+function addMinutes(d, mins) {
+  return new Date(d.getTime() + mins * 60000);
+}
+
+function isSameDay(a, b) {
+  return a.toDateString() === b.toDateString();
+}
+
+function eventKindClass(kind) {
+  if (kind === "external") return "border-external bg-external/90 text-slate-900 font-medium cursor-not-allowed";
+  return "border-study bg-white text-slate-900 font-medium cursor-move shadow-sm";
 }
 
 function renderEvent(arg) {
   const e = arg.event;
   const job = e.extendedProps.job;
   const isExternal = e.extendedProps.kind === "external";
+  const done = job && job.status === "done";
   const card = document.createElement("div");
-  card.className = `p-2 text-[11px] leading-tight rounded border ${
-    isExternal
-      ? "border-external bg-external/90 text-slate-900 font-medium cursor-not-allowed"
-      : job && job.status === "done"
-      ? "border-done bg-slate-100 text-slate-500 line-through font-medium opacity-70 cursor-default"
-      : "border-study bg-white text-slate-900 font-medium cursor-move shadow-sm"
-  }`;
+  card.className = `p-2 text-[11px] leading-tight rounded border ${done
+    ? "border-done bg-slate-100 text-slate-500 line-through font-medium opacity-70 cursor-default"
+    : eventKindClass(e.extendedProps.kind)}`;
 
   const time = document.createElement("div");
   time.className = "text-[10px] " + (isExternal ? "text-slate-700" : "text-slate-500");
@@ -52,18 +84,28 @@ function renderEvent(arg) {
   meta.textContent = isExternal
     ? `· ${e.extendedProps.venue || ""}`
     : job
-    ? `· ${job.duration_min}m ${job.kind === "revision" ? "R" + job.revision_round : ""}`
+    ? `· ${job.duration_min != null ? job.duration_min + "m" : ""} ${job.kind === "revision" ? "R" + job.revision_round : "learn"}`
     : "";
   card.appendChild(meta);
 
-  if (job && job.status !== "done") {
+  const pinned = pinnedJobs.has(e.id) || (job && job.pinned === 1);
+  if (pinned) {
+    const pin = document.createElement("span");
+    pin.className = "text-[10px] text-yellow-500 ml-1";
+    pin.textContent = "📌";
+    pin.title = "Pinned — moved manually, kept on re-plan";
+    meta.appendChild(pin);
+  }
+
+  if (job && !done) {
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.className = "mt-1 shrink-0";
     cb.title = "Mark done";
-    cb.onclick = async (ev) => {
+    jobCbById.set(job.id, cb);
+    cb.onclick = (ev) => {
       ev.stopPropagation();
-      await tickJob(job.id);
+      tickJob(job.id, card);
     };
     card.appendChild(cb);
   }
@@ -77,7 +119,9 @@ async function loadEvents() {
   const to = isoDate(view.currentEnd);
   try {
     const events = await api(`events?from=${from}&to=${to}`);
+    eventsCache = events;
     calendar.removeAllEvents();
+    jobCbById.clear();
     events.forEach((e) => {
       calendar.addEvent({
         id: e.id,
@@ -91,25 +135,55 @@ async function loadEvents() {
           job: e.job || null,
         },
       });
+      const j = e.job || null;
+      if (j && j.pinned === 1) pinnedJobs.add(e.id);
     });
     setText(rangeEl, `${utcDay(view.currentStart)} – ${utcDay(view.currentEnd)}`);
-    updateProgress(events);
-    weekEmpty.hidden = events.length > 0;
+    await updateProgress(events);
+    const empty = events.length === 0;
+    weekEmpty.hidden = !isMobile || empty;
+    if (isMobile) renderMobileList();
   } catch (err) {
     toast("Failed to load week: " + err.message, "error");
   }
 }
 
-function updateProgress(events) {
+/** Week progress bar. Computes planned/done for the visible week from the
+ *  loaded events. Optionally augments with GET /api/stats `by_day` entries
+ *  whose date falls inside the visible range. Never shows all-future totals
+ *  as "this week". */
+async function updateProgress(events) {
+  const view = calendar.view;
   let plannedMin = 0;
   let doneMin = 0;
-  events.forEach((e) => {
-    const job = e.extendedProps.job;
-    if (!job) return;
-    const mins = job.duration_min || 0;
-    plannedMin += mins;
-    if (job.status === "done") doneMin += mins;
-  });
+  let usedStats = false;
+  try {
+    const stats = await api("stats");
+    const byDay = stats && stats.by_day && Array.isArray(stats.by_day) ? stats.by_day : [];
+    if (byDay.length && view) {
+      const f = isoDate(view.currentStart);
+      const t = isoDate(view.currentEnd);
+      byDay.forEach((d) => {
+        if (!d || d.date < f || d.date >= t) return;
+        plannedMin += Number(d.planned_min || 0);
+        doneMin += Number(d.done_min || 0);
+      });
+      usedStats = plannedMin > 0 || doneMin > 0;
+    }
+  } catch {
+    // stats endpoint unavailable -> fall through to events below
+  }
+  if (!usedStats) {
+    plannedMin = 0;
+    doneMin = 0;
+    events.forEach((e) => {
+      const job = e.extendedProps.job;
+      if (!job) return;
+      const mins = job.duration_min || 0;
+      plannedMin += mins;
+      if (job.status === "done") doneMin += mins;
+    });
+  }
   if (plannedMin === 0) {
     progressWrap.hidden = true;
     return;
@@ -117,32 +191,50 @@ function updateProgress(events) {
   progressWrap.hidden = false;
   const pct = Math.round((doneMin / plannedMin) * 100);
   progressBar.style.width = `${pct}%`;
-  setText(progressText, `${(doneMin / 60).toFixed(1)}h / ${(plannedMin / 60).toFixed(1)}h`);
+  setText(progressText, `${formatHours(doneMin / 60)} / ${formatHours(plannedMin / 60)}`);
 }
 
-async function tickJob(jobId) {
+async function tickJob(jobId, el) {
+  const cb = jobCbById.get(jobId);
+  if (cb) {
+    cb.disabled = true;
+    cb.checked = true;
+  }
+  if (el) el.classList.add("line-through", "text-slate-400", "opacity-60");
   try {
     await api(`jobs/${jobId}/complete`, { method: "POST" });
-    closePopover();
-    loadEvents();
     toast("Job marked done", "success");
+    loadEvents(); // refresh so new revision jobs appear
   } catch (err) {
+    if (cb) {
+      cb.checked = false;
+      cb.disabled = false;
+    }
+    if (el) el.classList.remove("line-through", "text-slate-400", "opacity-60");
     toast("Failed: " + err.message, "error");
   }
 }
 
 async function moveJob(jobId, startIso, endIso) {
-  try {
-    await api(`jobs/${jobId}/move`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: `slot_start=${encodeURIComponent(startIso)}&slot_end=${encodeURIComponent(endIso)}`,
-    });
-    toast("Job rescheduled", "success");
-    loadEvents();
-  } catch (err) {
-    toast("Can't move there: " + err.message, "error");
+  await api(`jobs/${jobId}/move`, {
+    method: "POST",
+    body: { slot_start: startIso, slot_end: endIso },
+  });
+  pinnedJobs.add(jobId);
+  toast("Job rescheduled", "success");
+  loadEvents();
+}
+
+async function replanOpenGoals() {
+  const goals = await api("goals");
+  let moved = 0;
+  for (const g of goals) {
+    if (g.status === "closed" || g.status === "done" || g.status === "completed") continue;
+    const res = await api(`goals/${g.id}/replan`, { method: "POST" });
+    moved += res.moved_count ?? res.moved_jobs?.length ?? 0;
   }
+  toast(`Re-planned ${moved} jobs`, "success");
+  loadEvents();
 }
 
 function openPopover(job, anchorRect) {
@@ -150,6 +242,7 @@ function openPopover(job, anchorRect) {
   currentJobId = job.id;
   popover.hidden = false;
   popover.innerHTML = "";
+
   const close = document.createElement("button");
   close.className = "absolute right-2 top-2 text-slate-400 hover:text-slate-700 text-xs";
   close.textContent = "✕";
@@ -158,17 +251,21 @@ function openPopover(job, anchorRect) {
 
   const title = document.createElement("div");
   title.className = "font-semibold mb-1";
-  title.textContent = job.material_title || "Job";
+  title.textContent = job.title || "Job";
   popover.appendChild(title);
 
   const line = document.createElement("div");
-  line.className = "text-xs text-slate-500 mb-3";
-  line.textContent = `${utcDay(job.slot_start)} ${utcTime(job.slot_start)}–${utcTime(job.slot_end)} · ${job.duration_min}m`;
+  line.className = "text-xs text-slate-500 mb-2";
+  line.textContent = `${utcDay(job.slot_start)} ${utcTime(job.slot_start)}–${utcTime(job.slot_end)} · ${job.duration_min != null ? job.duration_min + "m" : ""}`;
   popover.appendChild(line);
 
   const kind = document.createElement("div");
   kind.className = "text-xs text-slate-500 mb-3";
-  kind.textContent = job.kind === "revision" ? `Revision R${job.revision_round}` : "Learn job";
+  kind.textContent = job.kind === "revision" ? `Revision R${job.revision_round ?? ""}` : "Learn job";
+  const pinned = pinnedJobs.has(job.id) || job.pinned === 1;
+  if (pinned) {
+    kind.textContent += "  📌 pinned";
+  }
   popover.appendChild(kind);
 
   const actions = document.createElement("div");
@@ -178,7 +275,7 @@ function openPopover(job, anchorRect) {
   skip.textContent = "Mark skipped";
   skip.onclick = async () => {
     try {
-      await api(`jobs/${jobId}/skip`, { method: "POST" });
+      await api(`jobs/${job.id}/skip`, { method: "POST" });
       closePopover();
       loadEvents();
       toast("Job skipped", "success");
@@ -191,10 +288,14 @@ function openPopover(job, anchorRect) {
   replan.textContent = "Re-plan goal";
   replan.onclick = async () => {
     try {
-      await api(`goals/${job.goal_id}/replan`, { method: "POST" });
       closePopover();
+      if (job && job.goal_id) {
+        await api(`goals/${job.goal_id}/replan`, { method: "POST" });
+        toast("Goal re-planned", "success");
+      } else {
+        await replanOpenGoals();
+      }
       loadEvents();
-      toast("Goal re-planned", "success");
     } catch (err) {
       toast("Re-plan failed: " + err.message, "error");
     }
@@ -203,7 +304,6 @@ function openPopover(job, anchorRect) {
   actions.appendChild(replan);
   popover.appendChild(actions);
 
-  // position below anchor
   popover.style.left = Math.max(8, anchorRect.left) + "px";
   popover.style.top = Math.min(anchorRect.bottom + 6, window.innerHeight - 260) + "px";
 }
@@ -211,6 +311,90 @@ function openPopover(job, anchorRect) {
 function closePopover() {
   popover.hidden = true;
   currentJobId = null;
+}
+
+function renderMobileList() {
+  listEl.innerHTML = "";
+  if (!eventsCache.length) {
+    listEl.textContent = "Nothing planned for this week. Create a goal and drop materials in the Inbox.";
+    return;
+  }
+  const byDay = new Map();
+  eventsCache.forEach((e) => {
+    const key = isoDate(new Date(e.dtstart));
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(e);
+  });
+  [...byDay.keys()].sort().forEach((dayKey) => {
+    const dayEvents = byDay.get(dayKey).sort((a, b) => new Date(a.dtstart) - new Date(b.dtstart));
+
+    const header = document.createElement("div");
+    header.className = "mb-2 mt-4 text-xs font-semibold text-slate-500 uppercase tracking-wider";
+    header.textContent = utcDay(dayKey);
+    listEl.appendChild(header);
+
+    dayEvents.forEach((e) => {
+      const job = e.extendedProps.job;
+      const isExternal = e.extendedProps.kind === "external";
+      const done = job && job.status === "done";
+
+      const row = document.createElement("div");
+      row.className = `flex items-start gap-2 p-2 rounded border ${done
+        ? "border-done bg-slate-100 text-slate-500 line-through opacity-60"
+        : isExternal
+        ? "border-external bg-external/10 text-slate-900"
+        : "border-study bg-white text-slate-900"}`;
+
+      const time = document.createElement("div");
+      time.className = "text-[10px] text-slate-500 shrink-0";
+      time.textContent = e.allDay ? "All day" : `${utcTime(e.dtstart)}–${utcTime(e.dtend)}`;
+      row.appendChild(time);
+
+      const info = document.createElement("div");
+      info.className = "flex-1 min-w-0";
+      const title = document.createElement("div");
+      title.className = "text-sm font-medium truncate";
+      title.textContent = e.title;
+      info.appendChild(title);
+      const meta = document.createElement("div");
+      meta.className = "text-[9px] text-slate-400 truncate";
+      meta.textContent = isExternal
+        ? `· ${e.extendedProps.venue || ""}`
+        : job
+        ? `· ${job.duration_min != null ? job.duration_min + "m" : ""} ${job.kind === "revision" ? "R" + job.revision_round : "learn"}`
+        : "";
+      info.appendChild(meta);
+      row.appendChild(info);
+
+      if (job && !done) {
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.className = "mt-0.5 shrink-0";
+        cb.title = "Mark done";
+        jobCbById.set(job.id, cb);
+        cb.onclick = (ev) => {
+          ev.stopPropagation();
+          tickJob(job.id, row);
+        };
+        row.appendChild(cb);
+      }
+      listEl.appendChild(row);
+    });
+  });
+}
+
+/** Desktop: time grid. Mobile (< 768 px): vertical day-list, no horizontal scroll. */
+function toggleMobileView() {
+  const mobile = window.innerWidth < 768;
+  if (mobile === isMobile) return;
+  isMobile = mobile;
+  calendarEl.hidden = mobile;
+  listEl.hidden = !mobile;
+  if (mobile) {
+    renderMobileList();
+  } else if (calendar) {
+    calendar.updateSize();
+  }
 }
 
 calendar = new Calendar(calendarEl, {
@@ -223,32 +407,40 @@ calendar = new Calendar(calendarEl, {
   allDaySlot: false,
   headerToolbar: false,
   editable: true,
+  today: isoDate(new Date()),
   eventEditable: (info) => info.event.extendedProps.kind !== "external",
+  // Today column tint (dayHeaderClassNames / dayCellClassNames).
+  dayHeaderClassNames: (arg) => (isSameDay(arg.date, today) ? ["bg-blue-50 font-bold text-blue-700"] : []),
+  dayCellClassNames: (arg) => (isSameDay(arg.date, today) ? ["bg-blue-50/50"] : []),
   eventDragStart: (info) => {
     if (info.event.extendedProps.kind === "external") return false;
+    const job = info.event.extendedProps.job;
+    draggedJobId = job ? job.id : null;
+    draggedDuration = job && job.duration_min ? job.duration_min : 50;
   },
   eventAllow: (dropInfo) => {
-    // veto dragging a job onto an external event
-    if (draggedJobId) {
-      const overlapping = calendar.getEvents().some((e) => {
-        if (e.extendedProps.kind !== "external") return false;
-        const es = new Date(e.start),
-          ee = new Date(e.end);
-        const ds = new Date(dropInfo.date),
-          de = new Date(dropInfo.date);
-        de.setMinutes(de.getMinutes() + (draggedDuration || 50));
-        return ds < ee && es < de;
-      });
-      return !overlapping;
-    }
-    return true;
+    if (!draggedJobId) return true;
+    // Never drop a job onto or over an external event.
+    const dur = draggedDuration || 50;
+    const ds = dropInfo.date;
+    const de = new Date(ds.getTime() + dur * 60000);
+    const overExternal = calendar.getEvents().some((e) => {
+      if (e.extendedProps.kind !== "external") return false;
+      const es = new Date(e.start);
+      const ee = new Date(e.end);
+      return es < de && ds < ee;
+    });
+    if (overExternal) return false;
+    // Reject past dates.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    return ds >= startOfToday;
   },
   events: [],
   eventContent: renderEvent,
   eventClick: (info) => {
     const job = info.event.extendedProps.job;
-    if (!job) return;
-    if (job.status === "done") {
+    if (!job || job.status === "done") {
       closePopover();
       return;
     }
@@ -260,16 +452,10 @@ calendar = new Calendar(calendarEl, {
   eventDrop: async (info) => {
     const job = info.event.extendedProps.job;
     if (!job || job.status === "done") return;
-    const startIso = info.event.start.toISOString();
-    const endIso = info.event.end ? info.event.end.toISOString() : null;
+    const startIso = isoSeconds(info.event.start);
+    const endIso = info.event.end ? isoSeconds(info.event.end) : isoSeconds(addMinutes(info.event.start, draggedDuration || 50));
     try {
-      await api(`jobs/${job.id}/move`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `slot_start=${encodeURIComponent(startIso)}&slot_end=${encodeURIComponent(endIso || startIso)}`,
-      });
-      toast("Job rescheduled", "success");
-      loadEvents();
+      await moveJob(job.id, startIso, endIso);
     } catch (err) {
       info.revert();
       toast("Can't move there: " + err.message, "error");
@@ -279,17 +465,8 @@ calendar = new Calendar(calendarEl, {
 });
 calendar.render();
 
-let draggedJobId = null;
-let draggedDuration = 50;
-calendar.on("eventDragStart", (info) => {
-  const job = info.event.extendedProps.job;
-  draggedJobId = job ? job.id : null;
-  draggedDuration = job ? job.duration_min : 50;
-});
-calendar.on("eventDragStop", () => {
-  draggedJobId = null;
-  draggedDuration = 50;
-});
+window.addEventListener("resize", toggleMobileView);
+toggleMobileView();
 
 btnToday.onclick = () => calendar.today();
 document.addEventListener("click", (e) => {
