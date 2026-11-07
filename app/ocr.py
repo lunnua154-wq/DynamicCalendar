@@ -10,6 +10,7 @@ the provider is ``"cloudflare"`` and both account id and API token are set.
 
 from __future__ import annotations
 
+import re
 import base64
 import json
 import urllib.request
@@ -25,8 +26,12 @@ _CLOUDFLARE_AI_URL = (
 )
 
 _TIMEOUT_SECONDS = 30
-
-_DEFAULT_PROMPT = "Extract all text from this image. Return only the extracted text."
+# Cap OCR work so a huge scanned book can't block the upload pipeline.
+_MAX_OCR_IMAGES = 20
+_MAX_OCR_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB per image
+# Model ids look like "@cf/unum/uform-gen2-qwen-500m": letters, digits, -., /, @.
+# No ".." segments, so the id can never traverse the URL path.
+_MODEL_RE = re.compile(r"^[A-Za-z0-9_./@-]{1,100}$")
 
 
 def ocr_enabled(settings: Settings) -> bool:
@@ -87,12 +92,17 @@ def ocr_image(raw: bytes, settings: Settings) -> str | None:
     """
     if not ocr_enabled(settings):
         return None
+    model = settings.ocr_model or ""
+    if not _MODEL_RE.fullmatch(model) or ".." in model:
+        return None  # refuse to interpolate an unvalidated model into the URL
+    if len(raw) > _MAX_OCR_IMAGE_BYTES:
+        return None  # oversized image: skip rather than hammer the API
     try:
         image_b64 = base64.b64encode(raw).decode("ascii")
     except Exception:
         return None
     url = _CLOUDFLARE_AI_URL.format(
-        account_id=settings.cf_account_id, model=settings.ocr_model
+        account_id=settings.cf_account_id, model=model
     )
     # Cloudflare Workers AI image-to-text format: {"image": [base64, ...]}.
     # A prompt is also accepted by the endpoint ("{"prompt": ..., "image": [...]}").
@@ -121,6 +131,8 @@ def extract_pdf_images(path: str) -> list[bytes]:
             data = getattr(img, "data", None)
             if isinstance(data, (bytes, bytearray)):
                 images.append(bytes(data))
+            if len(images) >= _MAX_OCR_IMAGES:
+                return images
     return images
 
 

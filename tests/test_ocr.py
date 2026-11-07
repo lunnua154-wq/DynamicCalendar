@@ -259,3 +259,52 @@ def test_parse_settings_ocr_from_rows():
     assert s.ocr_model == "@cf/my-model"
     assert s.ocr_min_chars == 100
     assert s.ocr_enabled is True
+
+
+def test_ocr_image_rejects_unvalidated_model_name(monkeypatch):
+    called = []
+
+    def boom(*a, **kw):
+        called.append(a)
+        raise AssertionError("urlopen must not be called for an invalid model id")
+
+    monkeypatch.setattr(ocr.urllib.request, "urlopen", boom)
+    s = _settings(
+        ocr_provider="cloudflare",
+        cf_account_id="acc",
+        cf_api_token="tok",
+        ocr_model="../../etc/passwd",
+    )
+    assert ocr.ocr_image(b"img", s) is None
+    assert not called
+
+
+def test_ocr_image_rejects_oversized_image(monkeypatch):
+    called = []
+
+    def boom(*a, **kw):
+        called.append(a)
+        raise AssertionError("urlopen must not be called for an oversized image")
+
+    monkeypatch.setattr(ocr.urllib.request, "urlopen", boom)
+    s = _settings(ocr_provider="cloudflare", cf_account_id="acc", cf_api_token="tok")
+    assert ocr.ocr_image(b"\x00" * (10 * 1024 * 1024 + 1), s) is None
+    assert not called
+
+
+def test_extract_pdf_images_caps_image_count(monkeypatch, tmp_path):
+    fake_pdf = tmp_path / "fake.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    class _Img:
+        def __init__(self, i):
+            self.data = bytes([i]) * 8
+
+    class _Page:
+        images = [_Img(i) for i in range(50)]
+
+    class _Reader:
+        pages = [_Page()]
+
+    monkeypatch.setattr(ocr, "PdfReader", lambda path: _Reader())
+    assert len(ocr.extract_pdf_images(str(fake_pdf))) == 20

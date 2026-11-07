@@ -308,3 +308,13 @@ def test_tune_settings_out_of_bounds_falls_back():
     c._client = fake
     out = c.tune_settings(context="busy week")
     assert out == {}  # validation error -> fallback (no exception)
+
+
+def test_extract_json_braces_inside_string_literals():
+    text = 'prefix {"reason": "a } b { c", "topic_id": null} trailing'
+    assert extract_json(text) == {"reason": "a } b { c", "topic_id": None}
+
+
+def test_extract_json_non_object_raises():
+    with pytest.raises(ValueError):
+        extract_json("[1, 2, 3]")

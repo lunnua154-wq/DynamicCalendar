@@ -19,7 +19,8 @@ A delivery is accepted only when **all** of these are true:
    llama.cpp/Ollama server), `tag`, `cluster` and `chat` answer without errors; a broken
    endpoint still falls back to offline behaviour (never a 500).
 5. **Docker** — `docker compose up --build` serves the same app on `http://localhost:8000`,
-   with the database persisted in the `./data` volume.
+   with the database persisted in the `dynacalendar-data` named volume, and the
+   healthcheck hitting `/api/health`.
 6. **Docs** — `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/DATA_MODEL.md`,
    `docs/UX_SPEC.md`, `docs/TESTING.md` and `README.md` match the shipped behaviour.
 7. **No secrets** — no API key, token or local endpoint is committed; runtime data stays
@@ -74,7 +75,7 @@ Then point the base URL at a dead port and verify the app still works offline
 ## Docker
 
 ```bash
-docker compose up --build          # app on :8000, data in ./data
+docker compose up --build          # app on :8000, data in the dynacalendar-data volume
 docker compose --profile llm up    # optional local ollama service on :11434
 ```
 

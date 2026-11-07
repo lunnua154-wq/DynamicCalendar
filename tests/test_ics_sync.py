@@ -1,24 +1,28 @@
 """ICS import tests using samples/sample_calendar.ics (stable UIDs)."""
 
-import os
-import tempfile
+import shutil
+import uuid
+from pathlib import Path
 
 import pytest
 
 from app import db, ics_sync
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 @pytest.fixture
 def conn():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    base = _REPO_ROOT / "data" / "_test" / uuid.uuid4().hex
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / "test.db"
     c = db.connect(path)
     db.init_db(c)
     try:
         yield c, path
     finally:
         c.close()
-        os.unlink(path)
+        shutil.rmtree(base, ignore_errors=True)
 
 
 class F:
@@ -70,13 +74,9 @@ def test_reimport_dedup_skips_unchanged(conn):
 
 def test_invalid_file_clean_error(conn):
     c, path = conn
-    fd, bad = tempfile.mkstemp(suffix=".ics")
-    os.write(fd, b"this is not an ics file at all")
-    os.close(fd)
-    try:
-        with pytest.raises(Exception):
-            ics_sync.import_ics(Bad(bad), db_path=path)
-    finally:
-        os.unlink(bad)
+    bad = str(Path(path).parent / "bad.ics")
+    Path(bad).write_bytes(b"this is not an ics file at all")
+    with pytest.raises(Exception):
+        ics_sync.import_ics(Bad(bad), db_path=path)
     # db still usable / no partial import pollution
     assert db.list_events(c) == []

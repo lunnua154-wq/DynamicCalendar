@@ -504,3 +504,19 @@ def test_duplicate_and_error_materials_are_not_planned(conn):
         j["material_id"] for j in db.jobs_for_goal(conn, goal_id)
     }
     assert planned == {ready_id + "a"}
+
+
+def test_revision_spacing_matches_intervals(conn):
+    """Revision rounds land on done + revision_intervals_days (+1/+3/+7/+14)."""
+    _add_externals(conn)
+    gid, mid = _add_goal_material(conn, effort=1.0)
+    _replan(conn, gid, now="2026-11-03T12:00:00Z")
+    learn = [j for j in db.jobs_for_goal(conn, gid) if j["kind"] == "learn"][0]
+    _complete_learn_job(conn, gid, learn["id"], "2026-11-03T12:00:00Z")
+    _replan(conn, gid, now="2026-11-03T12:00:00Z")
+    revs = {
+        j["revision_round"]: j["slot_start"][:10]
+        for j in db.jobs_for_goal(conn, gid)
+        if j["kind"] == "revision"
+    }
+    assert revs == {1: "2026-11-04", 2: "2026-11-06", 3: "2026-11-10", 4: "2026-11-17"}

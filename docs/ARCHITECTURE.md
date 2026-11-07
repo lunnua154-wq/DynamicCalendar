@@ -28,6 +28,17 @@ upload (multipart)
   → inbox status line updates: received → converting → tagged → done
 ```
 
+## Data flow — ICS re-import (P1)
+
+```
+POST /api/ics/import (multipart file)
+  → merge events by ICS UID (same transaction, all-or-nothing)
+  → engine.replan() for every open goal
+    (pinned jobs that now overlap an imported external are deleted
+     and re-placed unpinned; pinned jobs that don't overlap stay put)
+  → exams detected are reported with their event ids
+```
+
 The user never deals with versions/groups/duplication — the result of `cluster`
 is presented as human text ("duplicate of X", "version update of Y", "new topic").
 
@@ -121,7 +132,9 @@ re-derivation.
 `GET /api/stats` derives numbers from the job/material tables (no cache):
 `planned_min` (pending+done jobs in range), `done_min` (done), `progress`,
 `revisions_due`, per-day totals, and per-goal `total_effort_hours` vs
-`done_effort_hours`. The Week progress bar and the Calendar stats panel both read it.
+`done_effort_hours`. `by_day` covers the trailing 13 days and the next 14; jobs
+outside the window are ignored. The Week progress bar and the Calendar stats panel
+both read it.
 
 ## OCR (optional, M4)
 

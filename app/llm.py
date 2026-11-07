@@ -33,27 +33,21 @@ _SCHEDULE_KEYWORDS = (
 def extract_json(text: str) -> dict[str, Any]:
     """Strip markdown fences and return the first JSON object in ``text``.
 
-    Raises ``ValueError`` if no parseable object is found. Callers catch this
-    and fall back (never propagate).
+    Uses the standard-library decoder (string-aware), so braces inside quoted
+    values don't truncate the parse. Raises ``ValueError`` if no parseable
+    object is found. Callers catch this and fall back (never propagate).
     """
     cleaned = _JSON_FENCE.sub("", text or "").strip()
     start = cleaned.find("{")
     if start == -1:
         raise ValueError("no JSON object in LLM output")
-    depth = 0
-    end = -1
-    for i in range(start, len(cleaned)):
-        ch = cleaned[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = i
-                break
-    if end == -1:
-        raise ValueError("no JSON object in LLM output")
-    return json.loads(cleaned[start:end + 1])
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+    except json.JSONDecodeError as exc:
+        raise ValueError("no parseable JSON object in LLM output") from exc
+    if not isinstance(obj, dict):
+        raise ValueError("LLM output is not a JSON object")
+    return obj
 
 
 def _fmt_slot(iso: str) -> str:

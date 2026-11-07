@@ -24,7 +24,7 @@ The calendar (ICS) is the source of truth; **deterministic Python** schedules st
 |---|---|---|
 | `tag` | material markdown → `{summary, tags[], effort_hours}` | tags = [filename stem], effort = default from settings |
 | `cluster` | new material + existing topics → `{topic_id, relation: new\|duplicate\|version}` | de-dup by `content_hash` only; each file its own topic |
-| `chat` | history + calendar context → reply | canned reply: "LLM not configured — use the calendar pages" |
+| `chat` | history + calendar context → reply | calendar-grounded reply (open goals, next 14 days of jobs/events, material summaries) |
 | `tune_settings` | context → `{daily_capacity_hours?, slot_minutes?}` | no-op (settings keep current values) |
 
 Bounds validation (enforced server-side, LLM or user):

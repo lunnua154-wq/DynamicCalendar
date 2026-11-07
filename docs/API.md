@@ -20,11 +20,14 @@ multipart.
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /api/events?from=&to=` | — | `[{id, kind, title, dtstart, dtend, venue, all_day, job?}]` — `job: {id, status, kind, material_id, revision_round, duration_min, pinned}` attached for study/revision kinds |
-| `POST /api/ics/import` | multipart `file` (.ics) | `{imported, skipped, exams_found: [titles], exams: [{event_id, title, dtstart, dtend, venue}]}` |
-| `GET /api/stats?goal_id=` | — | `{totals: {planned_min, done_min, progress, materials, revisions_due}, goals: [...], by_day: [{date, planned_min, done_min}]}` |
+| `POST /api/ics/import` | multipart `file` (.ics) | `{imported, skipped, exams_found: [titles], exams: [{event_id, title, dtstart, dtend, venue}], replanned_goals: [ids]}` |
+| `GET /api/stats?goal_id=` | — | `{totals: {planned_min, done_min, progress, materials, revisions_due}, goals: [...], by_day: [{date, planned_min, done_min}]}` — `by_day` covers the trailing 13 days and the next 14; unknown `goal_id` → **404** |
 
 `exams` is additive (kept alongside `exams_found`) so the Calendar exam banner can
-create a goal linked to the real exam event and its deadline.
+create a goal linked to the real exam event and its deadline. `replanned_goals` is
+also additive: the import replans **every open goal** after the events are written,
+so new/changed external events never leave jobs silently overlapping them (pinned
+jobs that an import clobbers are deleted and re-placed unpinned).
 
 ## Goals
 | Method & path | Body | Returns |
@@ -40,13 +43,15 @@ from that external event. If neither is present → **422**.
 ## Jobs
 | Method & path | Body | Returns |
 |---|---|---|
-| `GET /api/jobs?from=&to=` | — | `[{id, kind, title, material_id, material_title, slot_start, slot_end, duration_min, status, revision_round, pinned}]` |
+| `GET /api/jobs?from=&to=` | — | `[{id, kind, title, material_id, material_title, slot_start, slot_end, duration_min, status, revision_round, pinned}]` — `title` = the file name |
 | `POST /api/jobs/{id}/complete` | — | `{replanned: [ids], revisions_added: [ids]}` — **one atomic transaction**; idempotent for an already-done job |
 | `POST /api/jobs/{id}/move` | `{slot_start, slot_end}` | `{job, moved_jobs}` — sets `pinned=1`, reflows the rest; **409** if overlapping an external event, another job, after the goal deadline, or before now |
 | `POST /api/jobs/{id}/skip` | — | job row (`status='skipped'`); replans the goal |
 
-Move accepts ISO-8601 with or without milliseconds/`Z`. A moved job is **pinned**:
-later replans keep its slot. `skip` does not pin.
+Move accepts ISO-8601 with or without milliseconds/`Z`. `slot_end` must be after
+`slot_start` (**422**). A moved job is **pinned**: later replans keep its slot — and a
+**conflicted** job moved explicitly by the user becomes `pending` (pinned). `skip` does
+not pin.
 
 ## Inbox
 | Method & path | Body | Returns |
@@ -55,7 +60,7 @@ later replans keep its slot. `skip` does not pin.
 | `GET /api/inbox/files` | — | `[{id, filename, summary, tags, effort_hours, status, status_reason, duplicate_of, topic_id, topic_name, goal_id}]` |
 | `POST /api/inbox/files/{id}/dismiss` | `{action: 'duplicate'\|'superseded'\|'new'}` | material row — user override; replans the goal |
 | `POST /api/inbox/files/{id}/effort` | `{hours}` | material row — user override (bounds-validated); replans the goal |
-| `POST /api/inbox/files/{id}/attach` | `{goal_id}` | material row — attach to a goal and replan |
+| `POST /api/inbox/files/{id}/attach` | `{goal_id}` | material row — attach to a goal and replan; **404** if the goal is missing |
 
 A hash-duplicate creates a distinct `duplicate` material row linked via
 `duplicate_of` (the original keeps its files). Unsupported formats produce a row
@@ -84,15 +89,22 @@ values with `updated_by='llm'` and return them in `settings_changed`.
 ## Settings
 | Method & path | Body | Returns |
 |---|---|---|
-| `GET /api/settings` | — | all keys with decoded values + `updated_by` |
+| `GET /api/settings` | — | all keys with decoded values + `updated_by`; credential keys (`llm_api_key`, `cf_api_token`) are **write-only**: value echoes `""` with `configured: true` |
 | `PUT /api/settings` | `{"daily_capacity_hours": 5, ...}` | updated rows — bounds-validated (422 on out-of-bounds) |
 
 Keys: `daily_capacity_hours` (0.5–12), `slot_minutes` (15–120),
-`min_slot_minutes` (15–120), `revision_intervals_days` (list of 1–6 ints, 1–60),
-`default_effort_hours` (0.1–20), `llm_base_url`, `llm_model`, `llm_api_key`,
+`min_slot_minutes` (15–120), `revision_intervals_days` (list of 1–6 ints, 1–60, normalised to ascending order),
+`default_effort_hours` (0.1–20), `llm_base_url`, `llm_model`, `llm_api_key` (write-only),
 `ocr_provider` (`off|cloudflare`), `cf_account_id`, `cf_api_token`, `ocr_model`,
-`ocr_min_chars`.
+`ocr_min_chars`. Locally-hosted endpoints need no key (a client-side placeholder is
+used); hosted endpoints authenticate with `llm_api_key`.
+
+## Health
+| Route | Serves |
+|---|---|
+| `GET /api/health` | `{"status": "ok"}` — used by the Docker healthcheck and `scripts/smoke_e2e.py` |
 
 ## Errors
-`{"error": "<message>"}` with proper status codes: 404 not found, 409 conflict
-(e.g. job move overlaps external event), 422 validation, 500 unexpected.
+`{"error": "<message>"}` with proper status codes: 404 unknown route / not found,
+405 method not allowed, 409 conflict (e.g. job move overlaps external event),
+422 validation, 500 unexpected.
