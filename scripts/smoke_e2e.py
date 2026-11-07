@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -27,10 +28,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-# Must be set before app.main is imported (DEFAULT_DB_PATH is bound at import).
-_FD, _DB_PATH = tempfile.mkstemp(suffix=".db")
-os.close(_FD)
-os.environ["DYNACALENDAR_DB"] = _DB_PATH
+# Materials are derived from the DB path's parent directory; keep everything
+# under one throwaway mkdtemp so the script never writes into the shared
+# OS temp dir.
+_TMP_DIR = Path(tempfile.mkdtemp(prefix="dynacalendar-smoke-"))
+_DB_PATH = _TMP_DIR / "smoke.db"
+os.environ["DYNACALENDAR_DB"] = str(_DB_PATH)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -80,7 +83,7 @@ def free_slot(events: list[dict], jobs: list[dict], days_ahead: int = 10) -> tup
 
 
 def main() -> None:
-    print(f"temp db: {_DB_PATH}")
+    print(f"temp dir: {_TMP_DIR}")
 
     # 1. health
     check(client.get("/api/health").json()["status"] == "ok", "health endpoint")
@@ -215,5 +218,4 @@ if __name__ == "__main__":
     try:
         main()
     finally:
-        if os.path.exists(_DB_PATH):
-            os.unlink(_DB_PATH)
+        shutil.rmtree(_TMP_DIR, ignore_errors=True)

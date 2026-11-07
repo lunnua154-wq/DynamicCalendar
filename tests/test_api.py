@@ -1,18 +1,48 @@
 """API tests (FastAPI TestClient) covering docs/API.md happy paths + error codes."""
 
 import os
-import tempfile
+import shutil
+import uuid
+from pathlib import Path
+
+import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_TEMP_DIRS: list[Path] = []
+
+
+def _temp_db() -> Path:
+    """Fresh DB path under data/_test (never the shared OS temp dir)."""
+    base = _REPO_ROOT / "data" / "_test" / uuid.uuid4().hex
+    base.mkdir(parents=True, exist_ok=True)
+    _TEMP_DIRS.append(base)
+    return base / "test.db"
+
 
 # Point the app at a fresh temp DB before importing the module (DEFAULT_DB_PATH
 # is bound at import time).
-_fd, _path = tempfile.mkstemp(suffix=".db")
-os.close(_fd)
-os.environ["DYNACALENDAR_DB"] = _path
+os.environ["DYNACALENDAR_DB"] = str(_temp_db())
 
 from fastapi.testclient import TestClient
 
 from app import db
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _restore_db_path(monkeypatch):
+    """Restore DEFAULT_DB_PATH after each test even if a test mutates it."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod, "DEFAULT_DB_PATH", main_mod.DEFAULT_DB_PATH)
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_temp_dirs():
+    yield
+    for d in _TEMP_DIRS:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _client():
@@ -100,7 +130,7 @@ def test_settings_bounds_422():
     assert r.status_code == 200, r.text
     r = c.get("/api/settings")
     vals = {s["key"]: s["value"] for s in r.json()}
-    assert vals["daily_capacity_hours"] == "6.0"
+    assert vals["daily_capacity_hours"] == 6.0
 
 
 def test_upload_without_files_422():
@@ -168,7 +198,8 @@ def test_upload_duplicate_content():
 
 
 def test_ics_import_roundtrip():
-    c = _client()
+    path = _temp_db()
+    c = _client_at(path)
     with open("samples/sample_calendar.ics", "rb") as fh:
         r = c.post("/api/ics/import", files={"file": ("sample.ics", fh, "text/calendar")})
     assert r.status_code == 200, r.text
@@ -196,13 +227,11 @@ def test_ics_import_roundtrip():
 def test_complete_job_atomic_endpoint():
     """Drive the full atomic tick through the API using a seeded temp DB."""
     import os
-    import tempfile
-
+    
     from app import db as _db
     from app.main import app as _app
 
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         conn = _db.connect(path)
         _db.init_db(conn)
@@ -267,7 +296,8 @@ def test_goal_json_body_and_exam_deadline():
 
 
 def test_goal_from_exam_event_derives_18_dec_deadline():
-    c = _client()
+    path = _temp_db()
+    c = _client_at(path)
     with open("samples/sample_calendar.ics", "rb") as fh:
         ir = c.post("/api/ics/import", files={"file": ("sample.ics", fh, "text/calendar")})
     assert ir.status_code == 200, ir.text
@@ -313,8 +343,7 @@ def test_get_goal_and_list_goals_progress_fields():
 
 
 def test_move_success_sets_pinned_and_replan_keeps_slot():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, _mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -340,8 +369,7 @@ def test_move_success_sets_pinned_and_replan_keeps_slot():
 
 
 def test_move_accepts_milliseconds():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, _mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -356,8 +384,7 @@ def test_move_accepts_milliseconds():
 
 
 def test_move_rejects_done_past_after_deadline_overlap():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -374,8 +401,7 @@ def test_move_rejects_done_past_after_deadline_overlap():
         assert r.status_code == 409, r.text
 
         # reseed a pending job for the remaining checks
-        fd2, path2 = tempfile.mkstemp(suffix=".db")
-        os.close(fd2)
+        path2 = _temp_db()
         try:
             gid2, mid2, jid2 = _seed_goal_material_job(path2)
             c2 = _client_at(path2)
@@ -398,8 +424,7 @@ def test_move_rejects_done_past_after_deadline_overlap():
 
 
 def test_move_overlapping_exam_is_409():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         conn = db.connect(path)
         db.init_db(conn)
@@ -443,8 +468,7 @@ def test_move_overlapping_exam_is_409():
 
 
 def test_complete_twice_no_duplicate_revisions():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -468,8 +492,7 @@ def test_complete_twice_no_duplicate_revisions():
 
 
 def test_revision_done_then_replan_no_respawn():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -494,8 +517,7 @@ def test_revision_done_then_replan_no_respawn():
 
 
 def test_skip_rejects_done_otherwise_skipped():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -509,8 +531,7 @@ def test_skip_rejects_done_otherwise_skipped():
         assert r.status_code == 409, r.text
 
         # pending job can be skipped
-        fd2, path2 = tempfile.mkstemp(suffix=".db")
-        os.close(fd2)
+        path2 = _temp_db()
         try:
             gid2, mid2, jid2 = _seed_goal_material_job(path2)
             c2 = _client_at(path2)
@@ -527,8 +548,7 @@ def test_skip_rejects_done_otherwise_skipped():
 
 
 def test_jobs_and_events_include_pinned():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -550,8 +570,7 @@ def test_jobs_and_events_include_pinned():
 
 
 def test_upload_with_goal_creates_jobs_immediately():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         conn = db.connect(path)
         db.init_db(conn)
@@ -583,8 +602,7 @@ def test_upload_with_goal_creates_jobs_immediately():
 
 
 def test_dismiss_json_and_new_action():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         conn = db.connect(path)
         db.init_db(conn)
@@ -616,8 +634,7 @@ def test_dismiss_json_and_new_action():
 
 
 def test_effort_json_and_form():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         conn = db.connect(path)
         db.init_db(conn)
@@ -644,8 +661,7 @@ def test_effort_json_and_form():
 
 
 def test_attach_only_ready_and_replan():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         conn = db.connect(path)
         db.init_db(conn)
@@ -685,8 +701,7 @@ def test_attach_only_ready_and_replan():
 
 
 def test_topics_list_rename_merge_attach():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         conn = db.connect(path)
         db.init_db(conn)
@@ -751,8 +766,7 @@ def test_topics_list_rename_merge_attach():
 
 
 def test_chat_offline_answers_due_this_week():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -769,9 +783,13 @@ def test_chat_offline_answers_due_this_week():
         msgs = r.json()
         assert any(m["role"] == "user" and m["content"] == "what's due this week?" for m in msgs)
         assert any(m["role"] == "assistant" for m in msgs)
-        # oldest-first ordering
+        # strict oldest-first ordering: the user message precedes its assistant reply
         roles = [m["role"] for m in msgs]
-        assert roles.count("user") >= 1 and roles.count("assistant") >= 1
+        assert roles.index("user") < roles.index("assistant")
+        assert len(roles) % 2 == 0 and all(
+            roles[i] == "user" and roles[i + 1] == "assistant"
+            for i in range(0, len(roles), 2)
+        )
     finally:
         os.unlink(path)
 
@@ -788,8 +806,7 @@ def test_chat_missing_message_422_keeps_history_untouched():
 
 
 def test_stats_returns_planned_done_progress():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    path = _temp_db()
     try:
         gid, mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
@@ -848,8 +865,204 @@ def test_settings_full_validation():
     assert r.status_code == 200, r.text
     r = c.get("/api/settings")
     vals = {s["key"]: s["value"] for s in r.json()}
-    assert vals["daily_capacity_hours"] == "8.0"
+    assert vals["daily_capacity_hours"] == 8.0
 
     # form body backward compat
     r = c.put("/api/settings", data={"slot_minutes": "40"})
     assert r.status_code == 200, r.text
+
+
+# --------------------------------------------------------------- M5 review regressions
+
+def test_stats_with_past_jobs_returns_200():
+    """Regression: stats 500'd once any job existed before today (by_day KeyError)."""
+    path = _temp_db()
+    gid, mid, jid = _seed_goal_material_job(
+        path,
+        slot_start="2026-10-25T09:00:00Z",
+        slot_end="2026-10-25T09:50:00Z",
+    )
+    conn = db.connect(path)
+    db.update_job(conn, jid, status="done", done_at="2026-10-25T09:55:00Z")
+    conn.commit()
+    conn.close()
+    c = _client_at(path)
+    r = c.get("/api/stats")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["by_day"]) == 28
+    done = sum(d["done_min"] for d in body["by_day"])
+    assert done >= 50
+
+
+def test_by_day_includes_yesterday():
+    path = _temp_db()
+    gid, mid, jid = _seed_goal_material_job(
+        path,
+        slot_start="2026-11-06T09:00:00Z",
+        slot_end="2026-11-06T09:50:00Z",
+    )
+    conn = db.connect(path)
+    db.update_job(conn, jid, status="done", done_at="2026-11-06T09:55:00Z")
+    conn.commit()
+    conn.close()
+    c = _client_at(path)
+    body = c.get("/api/stats").json()
+    day = next(d for d in body["by_day"] if d["date"] == "2026-11-06")
+    assert day["done_min"] == 50
+
+
+def test_move_onto_pending_job_returns_409():
+    path = _temp_db()
+    gid, mid, jid_a = _seed_goal_material_job(path)
+    conn = db.connect(path)
+    eid_b = db.create_event(
+        conn, kind="study", title="B",
+        dtstart="2026-11-10T16:00:00Z", dtend="2026-11-10T16:50:00Z", locked=0,
+    )
+    jid_b = db.create_job(
+        conn, event_id=eid_b, goal_id=gid, material_id=mid,
+        kind="learn", duration_min=50, status="pending",
+    )
+    conn.commit()
+    conn.close()
+    c = _client_at(path)
+    r = c.post(
+        f"/api/jobs/{jid_a}/move",
+        json={"slot_start": "2026-11-10T16:00:00Z", "slot_end": "2026-11-10T16:50:00Z"},
+    )
+    assert r.status_code == 409, r.text
+
+
+def test_move_slot_end_before_start_returns_422():
+    path = _temp_db()
+    gid, mid, jid = _seed_goal_material_job(path)
+    c = _client_at(path)
+    r = c.post(
+        f"/api/jobs/{jid}/move",
+        json={"slot_start": "2026-11-10T17:00:00Z", "slot_end": "2026-11-10T16:00:00Z"},
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_moved_conflicted_job_becomes_pending_and_pinned():
+    path = _temp_db()
+    gid, mid, jid = _seed_goal_material_job(path)
+    conn = db.connect(path)
+    db.update_job(conn, jid, status="conflicted")
+    conn.commit()
+    conn.close()
+    c = _client_at(path)
+    r = c.post(
+        f"/api/jobs/{jid}/move",
+        json={"slot_start": "2026-11-20T15:00:00Z", "slot_end": "2026-11-20T15:50:00Z"},
+    )
+    assert r.status_code == 200, r.text
+    job = r.json()["job"]
+    assert job["status"] == "pending"
+    assert job["pinned"] == 1
+
+
+def test_unknown_route_uses_error_envelope():
+    c = _client()
+    r = c.get("/api/definitely-not-a-route")
+    assert r.status_code == 404
+    body = r.json()
+    assert "error" in body and "detail" not in body
+
+
+def test_bad_json_body_uses_error_envelope_422():
+    c = _client()
+    r = c.post("/api/chat", content=b"{", headers={"Content-Type": "application/json"})
+    assert r.status_code == 422
+    assert "error" in r.json()
+
+
+def test_effort_rejects_non_numeric_with_422():
+    path = _temp_db()
+    gid, mid, jid = _seed_goal_material_job(path)
+    c = _client_at(path)
+    r = c.post(f"/api/inbox/files/{mid}/effort", json={"hours": "abc"})
+    assert r.status_code == 422
+    assert "error" in r.json()
+
+
+def test_numeric_title_rejected_with_422():
+    c = _client()
+    r = c.post("/api/goals", json={"title": 5, "deadline": "2026-12-18T00:00:00Z"})
+    assert r.status_code == 422
+    assert "error" in r.json()
+
+
+def test_attach_with_missing_goal_returns_404():
+    path = _temp_db()
+    gid, mid, jid = _seed_goal_material_job(path)
+    c = _client_at(path)
+    r = c.post(f"/api/inbox/files/{mid}/attach", json={"goal_id": "nope"})
+    assert r.status_code == 404
+    assert "error" in r.json()
+
+
+def test_settings_revision_intervals_are_sorted():
+    c = _client()
+    r = c.put("/api/settings", json={"revision_intervals_days": [7, 1, 3]})
+    assert r.status_code == 200, r.text
+    rows = c.get("/api/settings").json()
+    row = next(r for r in rows if r["key"] == "revision_intervals_days")
+    assert row["value"] == [1, 3, 7]
+
+
+def test_settings_api_key_is_write_only():
+    c = _client()
+    r = c.put("/api/settings", json={"llm_api_key": "sk-test-secret-value"})
+    assert r.status_code == 200
+    rows = c.get("/api/settings").json()
+    row = next(r for r in rows if r["key"] == "llm_api_key")
+    assert row["value"] == ""
+    assert row["configured"] is True
+
+
+def test_ics_import_replans_open_goals():
+    c = _client()
+    g = c.post("/api/goals", json={"title": "Exam prep", "deadline": "2026-12-18T00:00:00Z"}).json()
+    with open("samples/sample_calendar.ics", "rb") as fh:
+        r = c.post("/api/ics/import", files={"file": ("sample.ics", fh, "text/calendar")})
+    assert r.status_code == 200, r.text
+    assert g["id"] in (r.json().get("replanned_goals") or [])
+
+
+def test_skipped_learn_job_is_not_recreated():
+    path = _temp_db()
+    gid, mid, jid = _seed_goal_material_job(path)
+    c = _client_at(path)
+    r = c.post(f"/api/jobs/{jid}/skip")
+    assert r.status_code == 200, r.text
+    jobs = [j for j in c.get("/api/jobs").json() if j["goal_id"] == gid]
+    skipped = [j for j in jobs if j["status"] == "skipped"]
+    pending = [j for j in jobs if j["status"] == "pending"]
+    assert len(skipped) == 1
+    assert all(j["id"] != jid for j in pending)
+
+
+def test_jobs_include_material_title():
+    c = _client()
+    r = c.get("/api/jobs")
+    assert r.status_code == 200
+    # smoke-level shape: every job row carries a title (falls back to a placeholder)
+    assert all("title" in j for j in r.json())
+
+
+def test_topics_include_file_count_and_member_effort():
+    c = _client()
+    g = c.post("/api/goals", json={"title": "Topics shape", "deadline": "2026-12-18T00:00:00Z"}).json()
+    c.post(
+        "/api/inbox/upload",
+        files={"files": ("shape.md", b"# Shape\nsome unique content for the topics shape test", "text/markdown")},
+        data={"goal_id": g["id"]},
+    )
+    topics = c.get("/api/topics").json()
+    assert topics
+    for t in topics:
+        assert "file_count" in t and "created_at" in t
+        for m in t["members"]:
+            assert "effort_hours" in m

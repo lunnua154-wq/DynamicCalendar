@@ -85,7 +85,9 @@ def _occupied_ranges(jobs: list[dict[str, Any]]) -> list[tuple[datetime, datetim
 
 def _materials_for_goal(conn, goal_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT * FROM materials WHERE goal_id = ? ORDER BY created_at", (goal_id,)
+        "SELECT * FROM materials WHERE goal_id = ? AND status IN ('ready', 'tagged', 'new')"
+        " ORDER BY created_at",
+        (goal_id,),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -231,7 +233,9 @@ def replan(
         (j for j in done_jobs if j["kind"] == "learn"),
         key=lambda j: (j["done_at"] or j["created_at"], j["id"]),
     )
-    # Surviving revisions (done / skipped / pinned) block re-creating the same round.
+    # Any surviving revision of the same round blocks re-creation — including
+    # unpinned pending revisions kept for today (they survive a replan
+    # unchanged). Only revisions deleted for re-derivation can be re-created.
     existing_revisions = [j for j in surviving if j["kind"] == "revision"]
 
     def revision_exists(learn_job_id: str, round_no: int) -> bool:
@@ -239,7 +243,6 @@ def replan(
             if (
                 j["parent_job_id"] == learn_job_id
                 and j["revision_round"] == round_no
-                and (j["status"] in ("done", "skipped") or j["pinned"] == 1)
             ):
                 return True
         return False
@@ -291,11 +294,14 @@ def replan(
         if effort is None:
             effort = default_effort
         total_slots = max(1, math.ceil(effort * 60 / slot_minutes))
+        # A skipped learn job is a deliberate user decision: count it as
+        # covered so the planner does not re-create it. (Revision skip is
+        # already honoured via revision_exists.)
         covered = sum(
             1
             for j in surviving_learn
             if j["material_id"] == material["id"]
-            and j["status"] in ("done", "pending")
+            and j["status"] in ("done", "pending", "skipped")
         )
         needed = total_slots - covered
         for _ in range(needed):
