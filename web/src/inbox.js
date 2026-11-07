@@ -1,7 +1,7 @@
 /** P3 — Inbox: chat + file drop zone + material list + topics. */
 
 import "../tailwind.css";
-import { api, toast, setText, initSettings, promptDialog, dialog, escapeHtml } from "./common.js";
+import { api, toast, setText, initSettings, promptDialog, dialog } from "./common.js";
 
 const chatList = document.getElementById("chat-list");
 const chatInput = document.getElementById("chat-input");
@@ -110,7 +110,7 @@ async function loadGoals() {
 }
 
 function humanResult(r) {
-  if (r.status === "error") return `error: ${r.error || r.reason || "upload failed"}`;
+  if (r.status === "error") return `error: ${r.status_reason || r.error || r.reason || "upload failed"}`;
   if (r.status === "duplicate") return `duplicate of ${r.duplicate_of || r.duplicate_of_title || "an existing file"}`;
   if (r.cluster_relation === "version") return `version update of ${r.duplicate_of || "the previous version"}`;
   if (r.cluster_relation === "new") return `new topic "${r.tags && r.tags.length ? r.tags[0] : r.summary || ""}"`;
@@ -124,13 +124,14 @@ async function uploadFiles(files) {
   if (goalSelect.value) form.append("goal_id", goalSelect.value);
   try {
     const results = await api("inbox/upload", { method: "POST", body: form });
-    const lines = (results || []).map(humanResult);
+    const rows = results || [];
+    const lines = rows.map(humanResult);
     let extra = "";
     if (goalSelect.value) {
       const sel = goalSelect.options[goalSelect.selectedIndex];
-      extra = ` Jobs scheduled for goal "${escapeHtml(sel.textContent)}".`;
+      extra = ` Jobs scheduled for goal "${sel.textContent}".`;
     }
-    toast(`${results.length} file(s) uploaded.${extra} ${lines.join("; ")}`, "success");
+    toast(`${rows.length} file(s) uploaded.${extra} ${lines.join("; ")}`, "success");
     refreshFiles();
   } catch (err) {
     toast("Upload failed: " + err.message, "error");
@@ -232,8 +233,13 @@ function renderFiles() {
     effortInput.className = "w-20 border border-slate-300 rounded px-1.5 py-1 text-[11px] focus:ring-2 focus:ring-blue-500 outline-none";
     const oldEffort = effortInput.value;
     effortInput.onchange = async () => {
+      const v = Number(effortInput.value);
+      if (effortInput.value === "" || Number.isNaN(v) || v < 0.1) {
+        effortInput.value = oldEffort;
+        return;
+      }
       try {
-        await api(`inbox/files/${m.id}/effort`, { method: "POST", body: { hours: Number(effortInput.value) } });
+        await api(`inbox/files/${m.id}/effort`, { method: "POST", body: { hours: v } });
         toast("Effort updated", "success");
         refreshFiles();
       } catch (err) {
@@ -272,7 +278,7 @@ function renderFiles() {
 
     right.appendChild(dismiss);
 
-    if (goalSelected) {
+    if (goalSelected && m.status === "ready") {
       const attach = document.createElement("button");
       const sel = goalSelect.options[goalSelect.selectedIndex];
       attach.className = "text-[11px] text-blue-600 underline hover:underline";
@@ -297,8 +303,13 @@ function renderFiles() {
 }
 
 let mergeMenuEl = null;
+let mergeCloseListener = null;
 
 function closeMergeMenu() {
+  if (mergeCloseListener) {
+    window.removeEventListener("click", mergeCloseListener);
+    mergeCloseListener = null;
+  }
   if (mergeMenuEl) {
     mergeMenuEl.remove();
     mergeMenuEl = null;
@@ -314,7 +325,7 @@ function openMergeMenu(anchor, source) {
   targets.forEach((t) => {
     const item = document.createElement("button");
     item.className = "w-full text-left px-3 py-2 text-slate-700 hover:bg-blue-50 text-[11px]";
-    item.textContent = `Merge into "${escapeHtml(t.name || "Unnamed")}" (${t.file_count ?? 0})`;
+    item.textContent = `Merge into "${t.name || "Unnamed"}" (${t.file_count ?? 0})`;
     item.onclick = async (e) => {
       e.stopPropagation();
       closeMergeMenu();
@@ -336,7 +347,10 @@ function openMergeMenu(anchor, source) {
   const closeOnOutside = (e) => {
     if (!menu.contains(e.target)) closeMergeMenu();
   };
-  setTimeout(() => window.addEventListener("click", closeOnOutside), 0);
+  setTimeout(() => {
+    window.addEventListener("click", closeOnOutside);
+    mergeCloseListener = closeOnOutside;
+  }, 0);
 }
 
 async function loadTopics() {
@@ -356,8 +370,8 @@ function renderTopics() {
     const name = document.createElement("span");
     name.className = "truncate";
     name.style.maxWidth = "160px";
-    name.textContent = `${escapeHtml(t.name || "Unnamed")} (${t.file_count ?? 0})`;
-    const members = (t.members || []).map((m) => escapeHtml(m.filename || m.name || "")).join("\n");
+    name.textContent = `${t.name || "Unnamed"} (${t.file_count ?? 0})`;
+    const members = (t.members || []).map((m) => m.filename || m.name || "").join("\n");
     name.title = members || "No files";
     pill.appendChild(name);
 
@@ -365,7 +379,7 @@ function renderTopics() {
     rename.className = "text-[11px] underline text-slate-500 hover:text-blue-600";
     rename.textContent = "rename";
     rename.onclick = async () => {
-      const value = await promptDialog("Rename topic", `New name for "${escapeHtml(t.name || "Unnamed")}":`, t.name || "");
+      const value = await promptDialog("Rename topic", `New name for "${t.name || "Unnamed"}":`, t.name || "");
       if (value === null || value === t.name) return;
       try {
         await api(`topics/${t.id}/rename`, { method: "POST", body: { name: value } });

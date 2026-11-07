@@ -5,7 +5,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/daygrid";
 import "../tailwind.css";
-import { api, toast, dialog, utcTime, utcDay, setText, escapeHtml, formatHours, initSettings } from "./common.js";
+import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings } from "./common.js";
 
 const calendarEl = document.getElementById("calendar");
 const monthEl = document.getElementById("calendar-month");
@@ -119,7 +119,7 @@ async function loadEvents() {
       });
     });
     setText(monthEl, view.currentStart.toLocaleDateString(undefined, { month: "long", year: "numeric" }));
-    emptyState.hidden = events.length === 0;
+    emptyState.classList.toggle("hidden", events.length === 0);
     renderStats();
   } catch (err) {
     toast("Failed to load calendar: " + err.message, "error");
@@ -135,7 +135,7 @@ async function renderStats() {
     const payload = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     const goals = Array.isArray(payload.goals) ? payload.goals : [];
     const open = goals.filter((g) => g.status !== "closed" && g.status !== "done" && g.status !== "completed");
-    statsPanel.hidden = open.length === 0;
+    statsPanel.classList.toggle("hidden", open.length === 0);
     statsList.innerHTML = "";
     const totals = payload.totals || {};
     const panelRevisionsDue = totals.revisions_due != null ? totals.revisions_due : null;
@@ -182,7 +182,7 @@ async function renderStats() {
   } catch {
     // stats endpoint may not exist yet; keep the panel hidden rather than
     // breaking the month grid.
-    statsPanel.hidden = true;
+    statsPanel.classList.toggle("hidden", true);
   }
 }
 
@@ -192,7 +192,7 @@ async function tickJob(jobId) {
 }
 
 function openDay(date, event) {
-  dayPanel.hidden = false;
+  dayPanel.classList.toggle("hidden", false);
   setText(dayPanelDate, utcDay(date) + " · " + date.toLocaleDateString(undefined, { weekday: "long" }));
   dayPanelList.innerHTML = "";
   // gather events for that day
@@ -260,7 +260,7 @@ function openDay(date, event) {
   });
 }
 
-btnClose.onclick = () => (dayPanel.hidden = true);
+btnClose.onclick = () => dayPanel.classList.toggle("hidden", true);
 btnToday.onclick = () => calendar.today();
 btnImport.onclick = () => fileIcs.click();
 fileIcs.onchange = async () => {
@@ -292,14 +292,14 @@ function showExamBanner(exams) {
   pendingExam = ex;
   setText(
     examBannerText,
-    `Exam detected: ${escapeHtml(ex.title)} — ${utcDay(ex.dtstart)} ${utcTime(ex.dtstart)}–${utcTime(ex.dtend)} @ ${escapeHtml(ex.venue || "TBD")}`,
+    `Exam detected: ${ex.title} — ${utcDay(ex.dtstart)} ${utcTime(ex.dtstart)}–${utcTime(ex.dtend)} @ ${ex.venue || "TBD"}`,
   );
-  examBanner.hidden = false;
+  examBanner.classList.toggle("hidden", false);
 }
-btnExamDismiss.onclick = () => (examBanner.hidden = true);
+btnExamDismiss.onclick = () => examBanner.classList.toggle("hidden", true);
 btnExamCreate.onclick = async () => {
   if (!pendingExam) return;
-  const ok = await dialog("Create goal", `Create a goal for "${escapeHtml(pendingExam.title)}"?`);
+  const ok = await dialog("Create goal", `Create a goal for "${pendingExam.title}"?`);
   if (!ok) return;
   try {
     await api("goals", {
@@ -308,7 +308,7 @@ btnExamCreate.onclick = async () => {
     });
     toast("Goal created", "success");
     pendingExam = null;
-    examBanner.hidden = true;
+    examBanner.classList.toggle("hidden", true);
     loadEvents();
   } catch (err) {
     toast("Failed to create goal: " + err.message, "error");

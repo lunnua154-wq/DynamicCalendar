@@ -106,7 +106,15 @@ export function promptDialog(title, label, value = "") {
     card.appendChild(btns);
     backdrop.appendChild(card);
     document.body.appendChild(backdrop);
+    let keydownRemoved = false;
+    function removeKeydown() {
+      if (!keydownRemoved) {
+        keydownRemoved = true;
+        window.removeEventListener("keydown", onkey);
+      }
+    }
     const done = (val) => {
+      removeKeydown();
       backdrop.remove();
       resolve(val);
     };
@@ -116,8 +124,8 @@ export function promptDialog(title, label, value = "") {
       if (e.target === backdrop) done(null);
     };
     const onkey = (e) => {
-      if (e.key === "Escape") { window.removeEventListener("keydown", onkey); done(null); }
-      if (e.key === "Enter") { window.removeEventListener("keydown", onkey); done(input.value); }
+      if (e.key === "Escape") { removeKeydown(); done(null); }
+      if (e.key === "Enter") { removeKeydown(); done(input.value); }
     };
     window.addEventListener("keydown", onkey);
     input.focus();
@@ -174,12 +182,6 @@ export function utcDay(iso) {
     month: "short",
     day: "numeric",
   });
-}
-
-export function parseApiDate(iso) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 export function escapeHtml(unsafe) {
@@ -244,7 +246,6 @@ export function initSettings(btnEl) {
     { key: "ocr_model", label: "OCR model", type: "text", placeholder: "@cf/..." },
   ];
 
-  const numberKeys = new Set(["daily_capacity_hours", "slot_minutes", "default_effort_hours"]);
   const range = {
     daily_capacity_hours: [0.5, 12],
     slot_minutes: [15, 120],
