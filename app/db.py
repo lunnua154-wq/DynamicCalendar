@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS jobs (
                  CHECK (status IN ('pending','done','skipped','conflicted')),
   done_at        TEXT NULL,
   revision_round INTEGER NOT NULL DEFAULT 0,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  pinned         INTEGER NOT NULL DEFAULT 0,
+  parent_job_id  TEXT NULL REFERENCES jobs(id)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -117,8 +119,22 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate_jobs_columns(conn)
     _seed_default_settings(conn)
     conn.commit()
+
+
+def _migrate_jobs_columns(conn: sqlite3.Connection) -> None:
+    """Light migrations for existing databases created before the ``pinned`` /
+    ``parent_job_id`` columns existed. Safe to run on a fresh DB (columns are
+    already present via SCHEMA) and on an old DB (columns are added in place)."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+    if "pinned" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+    if "parent_job_id" not in existing:
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN parent_job_id TEXT NULL REFERENCES jobs(id)"
+        )
 
 
 def _seed_default_settings(conn: sqlite3.Connection) -> None:
@@ -297,14 +313,16 @@ def create_job(
     duration_min: int,
     status: str = "pending",
     revision_round: int = 0,
+    pinned: int = 0,
+    parent_job_id: str | None = None,
 ) -> str:
     job_id = new_id()
     conn.execute(
         """
         INSERT INTO jobs
           (id, event_id, goal_id, material_id, kind, duration_min, status,
-           revision_round, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           revision_round, created_at, pinned, parent_job_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job_id,
@@ -316,6 +334,8 @@ def create_job(
             status,
             revision_round,
             now_utc(),
+            pinned,
+            parent_job_id,
         ),
     )
     return job_id
