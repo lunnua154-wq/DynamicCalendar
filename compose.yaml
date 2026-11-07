@@ -1,0 +1,28 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - DYNACALENDAR_DB=/data/dynacalendar.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional local LLM provider (Cloudflare-compatible / Ollama). Opt in with:
+  #   docker compose --profile llm up
+  # No API keys are stored here.
+  ollama:
+    image: ollama/ollama
+    profiles:
+      - llm
+    volumes:
+      - ./ollama:/root/.ollama
+    ports:
+      - "11434:11434"

@@ -1,0 +1,16 @@
+# DynaCalendar — .dockerignore
+# Keep the build context small and never ship secrets or build outputs.
+
+node_modules/
+web/dist/
+data/
+.git/
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+.env
+.token
+.agents/
+.DS_Store
