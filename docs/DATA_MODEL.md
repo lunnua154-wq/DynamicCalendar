@@ -15,7 +15,7 @@ events
   title         TEXT NOT NULL
   dtstart       TEXT NOT NULL      -- UTC ISO-8601
   dtend         TEXT NOT NULL
-  all_day       INTEGER NOT NULL DEFAULT 0
+  all_day       INTEGER NOT NULL DEFAULT 0   -- 1 only for true VALUE=DATE VEVENTs (never datetimes)
   venue         TEXT NULL          -- LOCATION (shown on P1/P2 for external)
   description   TEXT NULL
   locked        INTEGER NOT NULL DEFAULT 0   -- 1 for external: engine never writes

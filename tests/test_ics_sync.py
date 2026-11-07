@@ -80,3 +80,27 @@ def test_invalid_file_clean_error(conn):
         ics_sync.import_ics(Bad(bad), db_path=path)
     # db still usable / no partial import pollution
     assert db.list_events(c) == []
+
+
+def test_timed_events_are_not_marked_all_day(conn):
+    """Regression: every datetime VEVENT was stored all_day=1, blinding the
+    week view to imported events."""
+    c, path = conn
+    ics_sync.import_ics(F(), db_path=path)
+    events = db.list_events(c)
+    books = next(e for e in events if e["title"] == "Library books due")
+    assert books["all_day"] == 1
+    timed = [e for e in events if e["title"] != "Library books due"]
+    assert timed and all(e["all_day"] == 0 for e in timed)
+
+
+def test_reimport_repairs_wrong_all_day(conn):
+    """Existing DBs stored all_day=1 for timed events; re-import must repair."""
+    c, path = conn
+    ics_sync.import_ics(F(), db_path=path)
+    c.execute("UPDATE events SET all_day = 1 WHERE title != 'Library books due'")
+    c.commit()
+    ics_sync.import_ics(F(), db_path=path)
+    events = db.list_events(c)
+    timed = [e for e in events if e["title"] != "Library books due"]
+    assert timed and all(e["all_day"] == 0 for e in timed)

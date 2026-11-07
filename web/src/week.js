@@ -403,7 +403,9 @@ calendar = new Calendar(calendarEl, {
   slotMinTime: "08:00:00",
   slotMaxTime: "22:00:00",
   height: "auto",
-  allDaySlot: false,
+  // Genuine all-day events (VALUE=DATE in the .ics) render in a compact
+  // all-day row; engine jobs are never all-day.
+  allDaySlot: true,
   headerToolbar: false,
   editable: true,
   today: isoDate(new Date()),

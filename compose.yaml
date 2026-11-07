@@ -18,10 +18,7 @@ services:
       retries: 3
       start_period: 10s
 
-volumes:
-  dynacalendar-data:
-
-  # Optional local LLM provider (Cloudflare-compatible / Ollama). Opt in with:
+  # Optional local LLM provider (Ollama, OpenAI-compatible). Opt in with:
   #   docker compose --profile llm up
   # No API keys are stored here.
   ollama:
@@ -29,6 +26,10 @@ volumes:
     profiles:
       - llm
     volumes:
-      - ./ollama:/root/.ollama
+      - ollama-data:/root/.ollama
     ports:
       - "11434:11434"
+
+volumes:
+  dynacalendar-data:
+  ollama-data:

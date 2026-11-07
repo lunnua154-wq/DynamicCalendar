@@ -220,19 +220,21 @@ export function initSettings(btnEl) {
   if (!modal) {
     modal = document.createElement("div");
     modal.id = "settings-modal";
+    // Single dim layer: the modal carries bg-black/60. The old separate
+    // “backdrop” div painted over the card and swallowed every click; the
+    // card is now positioned and only clicks on the dimmed area close.
     modal.className =
       "hidden fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center";
-    const backdrop = document.createElement("div");
-    backdrop.className = "absolute inset-0";
     const card = document.createElement("div");
     card.className =
-      "bg-white rounded-xl shadow-2xl border border-slate-200 w-96 p-6 max-w-md mx-4";
-    modal.appendChild(backdrop);
+      "relative bg-white rounded-xl shadow-2xl border border-slate-200 w-96 p-6 max-w-md mx-4";
     modal.appendChild(card);
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeModal();
+    });
     document.body.appendChild(modal);
-    backdrop.onclick = () => closeModal();
   }
-  const card = modal.children[1];
+  const card = modal.children[0];
   const fields = [
     { key: "llm_base_url", label: "LLM base URL", type: "url", placeholder: "http://localhost:11434/v1" },
     { key: "llm_model", label: "Model", type: "text", placeholder: "e.g. gpt-4o-mini" },
