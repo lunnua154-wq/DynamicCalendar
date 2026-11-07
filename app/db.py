@@ -473,6 +473,25 @@ def list_topics(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def get_topic(conn: sqlite3.Connection, topic_id: str) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
+    if row is None:
+        raise NotFoundError(f"topic {topic_id} not found")
+    return dict(row)
+
+
+def update_topic(
+    conn: sqlite3.Connection, topic_id: str, **fields: Any
+) -> dict[str, Any]:
+    if not fields:
+        return get_topic(conn, topic_id)
+    get_topic(conn, topic_id)  # raises if missing
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [topic_id]
+    conn.execute(f"UPDATE topics SET {cols} WHERE id = ?", values)
+    return get_topic(conn, topic_id)
+
+
 def get_material(conn: sqlite3.Connection, material_id: str) -> dict[str, Any]:
     row = conn.execute(
         "SELECT * FROM materials WHERE id = ?", (material_id,)
@@ -499,6 +518,78 @@ def find_material_by_hash(conn: sqlite3.Connection, content_hash: str) -> dict[s
         "SELECT * FROM materials WHERE content_hash = ?", (content_hash,)
     ).fetchone()
     return None if row is None else dict(row)
+
+
+def find_original_material_by_hash(
+    conn: sqlite3.Connection, content_hash: str
+) -> dict[str, Any] | None:
+    """Return the root (non-duplicate) material for a content hash.
+
+    Prefers the earliest non-duplicate row; if every row with this hash is a
+    duplicate, follows the ``duplicate_of`` chain back to the original so a
+    new duplicate is always linked to the original (never to another duplicate).
+    """
+    row = conn.execute(
+        "SELECT * FROM materials WHERE content_hash = ? AND status != 'duplicate'"
+        " ORDER BY created_at ASC LIMIT 1",
+        (content_hash,),
+    ).fetchone()
+    if row is not None:
+        return dict(row)
+    row = conn.execute(
+        "SELECT * FROM materials WHERE content_hash = ? ORDER BY created_at ASC LIMIT 1",
+        (content_hash,),
+    ).fetchone()
+    if row is None:
+        return None
+    cur = dict(row)
+    while cur.get("duplicate_of"):
+        parent = conn.execute(
+            "SELECT * FROM materials WHERE id = ?", (cur["duplicate_of"],)
+        ).fetchone()
+        if parent is None:
+            break
+        cur = dict(parent)
+    return cur
+
+
+def goal_progress(conn: sqlite3.Connection, goal_id: str) -> dict[str, Any]:
+    """Progress fields for a goal.
+
+    progress = done learn/revision minutes / total material effort hours
+    (clamp 0..1; 0 when no effort). Only materials with status in
+    (ready, tagged, new) count toward total effort.
+    """
+    total_minutes = 0.0
+    for r in conn.execute(
+        "SELECT effort_hours, status FROM materials WHERE goal_id = ?", (goal_id,)
+    ).fetchall():
+        if (
+            r["status"] in ("ready", "tagged", "new")
+            and r["effort_hours"] is not None
+        ):
+            total_minutes += float(r["effort_hours"]) * 60
+    done_minutes = 0
+    planned = 0
+    done = 0
+    for j in conn.execute(
+        "SELECT status, duration_min FROM jobs WHERE goal_id = ?", (goal_id,)
+    ).fetchall():
+        if j["status"] == "done":
+            done_minutes += int(j["duration_min"])
+            done += 1
+        elif j["status"] == "pending":
+            planned += 1
+    progress = 0.0
+    if total_minutes > 0:
+        progress = min(1.0, done_minutes / total_minutes)
+    return {
+        "progress": round(progress, 4),
+        "total_effort_hours": round(total_minutes / 60, 4),
+        "done_effort_hours": round(done_minutes / 60, 4),
+        "planned_jobs": planned,
+        "done_jobs": done,
+    }
 
 
 # ---------------------------------------------------------------- chat

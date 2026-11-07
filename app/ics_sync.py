@@ -112,6 +112,7 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
         imported = 0
         skipped = 0
         exams_found: list[str] = []
+        exams: list[dict[str, Any]] = []
 
         with conn:  # single transaction — rollback on any failure
             for component in cal.walk("VEVENT"):
@@ -123,9 +124,6 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                 for ev in evs:
                     uid = ev["ics_uid"]
                     is_exam = "exam" in [c.lower() for c in ev["categories"]]
-                    if is_exam:
-                        exams_found.append(ev["title"])
-
                     source = getattr(file_obj, "name", None)
 
                     existing = None
@@ -157,9 +155,10 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                             venue=ev["venue"],
                             description=ev["description"],
                         )
+                        event_id = existing["id"]
                         imported += 1
                     else:
-                        create_event(
+                        event_id = create_event(
                             conn,
                             kind="external",
                             title=ev["title"],
@@ -174,7 +173,24 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                         )
                         imported += 1
 
-        return {"imported": imported, "skipped": skipped, "exams_found": exams_found}
+                    if is_exam:
+                        exams_found.append(ev["title"])
+                        exams.append(
+                            {
+                                "event_id": event_id,
+                                "title": ev["title"],
+                                "dtstart": ev["dtstart"],
+                                "dtend": ev["dtend"],
+                                "venue": ev["venue"],
+                            }
+                        )
+
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "exams_found": exams_found,
+            "exams": exams,
+        }
     except IcsImportError:
         raise
     except Exception as exc:

@@ -1,5 +1,7 @@
 """Ingest pipeline tests (M1) — hash de-dup, conversion, tagging, clustering."""
 
+from unittest.mock import patch
+
 from app import db, ingest
 from app.config import Settings
 
@@ -30,6 +32,7 @@ class StubClient:
         self.topic_name = topic_name
         self.effort = effort
         self.tags: list[str] = []
+        self.cluster_kwargs: dict = {}
 
     def tag(self, *, markdown, filename):
         stem = filename.rsplit(".", 1)[0]
@@ -41,7 +44,24 @@ class StubClient:
             "effort_hours": self.effort,
         }
 
-    def cluster(self, *, content_hash, filename, existing_topics, existing_material_hashes, effort_hours=None):
+    def cluster(
+        self,
+        *,
+        content_hash,
+        filename,
+        existing_topics,
+        existing_material_hashes,
+        markdown="",
+        topic_name=None,
+        effort_hours=None,
+    ):
+        self.cluster_kwargs = dict(
+            content_hash=content_hash,
+            filename=filename,
+            markdown=markdown,
+            topic_name=topic_name,
+            effort_hours=effort_hours,
+        )
         if content_hash in existing_material_hashes:
             return {"relation": "duplicate", "topic_id": None, "topic_name": None, "reason": "dup"}
         return {
@@ -182,3 +202,61 @@ def test_merge_topics_moves_members(conn, data_dir):
     assert merged["id"] == other
     assert db.get_material(conn, material["id"])["topic_id"] == other
     assert [t["id"] for t in db.list_topics(conn)] == [other]
+
+
+def test_cluster_call_passes_markdown_and_effort(conn, data_dir):
+    raw = (SAMPLES / "materials" / "math_chapter3_limits.md").read_bytes()
+    client = StubClient()
+    _, material = _ingest(
+        conn, data_dir, "math_chapter3_limits.md", raw, client=client
+    )
+    assert material["status"] == "ready"
+    assert client.cluster_kwargs["effort_hours"] == 2.0
+    assert client.cluster_kwargs["markdown"]  # content excerpt included
+
+
+def test_ocr_hook_used_for_short_pdf(conn, data_dir, monkeypatch):
+    import markitdown
+
+    class FakeMdResult:
+        textcontent = "hi"  # shorter than ocr_min_chars (40) -> OCR should kick in
+
+    class FakeConverter:
+        def convert(self, path):
+            return FakeMdResult()
+
+    called = []
+
+    def fake_ocr_pdf(path, settings):
+        called.append((path, settings))
+        return "OCR extracted text"
+
+    monkeypatch.setattr(markitdown, "MarkItDown", lambda: FakeConverter())
+    monkeypatch.setattr(ingest.ocr, "ocr_pdf", fake_ocr_pdf)
+
+    raw = b"%PDF-1.4 fake"
+    _, material = _ingest(conn, data_dir, "scan.pdf", raw)
+    assert called, "ocr_pdf should be called for a short-text PDF"
+    assert material["status"] == "ready", material
+    markdown = (data_dir / "markdown" / f"{material['id']}.md").read_text(
+        encoding="utf-8"
+    )
+    assert "OCR extracted text" in markdown
+
+
+def test_convert_failed_reason_not_unsupported(conn, data_dir, monkeypatch):
+    """A supported file that markitdown cannot convert gets 'convert failed: ...'."""
+    import markitdown
+
+    class FakeConverter:
+        def convert(self, path):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(markitdown, "MarkItDown", lambda: FakeConverter())
+
+    _, material = _ingest(conn, data_dir, "notes.md", b"some content")
+    assert material["status"] == "error", material
+    assert material["status_reason"].startswith("convert failed:"), material
+    assert "unsupported format" not in material["status_reason"]
+    # original file kept on disk
+    assert (data_dir / "originals" / f"{material['id']}.md").exists()
