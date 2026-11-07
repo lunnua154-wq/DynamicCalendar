@@ -1,7 +1,7 @@
 /** P3 — Inbox: chat + file drop zone + material list + topics. */
 
 import "../tailwind.css";
-import { api, toast, setText } from "./common.js";
+import { api, toast, setText, initSettings } from "./common.js";
 
 const chatList = document.getElementById("chat-list");
 const chatInput = document.getElementById("chat-input");
@@ -13,6 +13,7 @@ const fileInput = document.getElementById("file-input");
 const btnBrowse = document.getElementById("btn-browse");
 const fileList = document.getElementById("file-list");
 const topicsStrip = document.getElementById("topics-strip");
+const btnSettings = document.getElementById("btn-settings");
 
 let pollTimer = null;
 let materials = []; // {id, filename, summary, tags, effort_hours, status, duplicate_of, topic_id}
@@ -264,6 +265,7 @@ function renderTopics() {
 async function init() {
   await loadGoals();
   await refreshFiles();
+  initSettings(btnSettings);
 }
 
 init();

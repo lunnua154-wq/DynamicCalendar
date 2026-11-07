@@ -5,7 +5,7 @@ import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/timegrid";
 import "../tailwind.css";
-import { api, toast, dialog, utcTime, utcDay, setText } from "./common.js";
+import { api, toast, dialog, utcTime, utcDay, setText, initSettings } from "./common.js";
 
 const calendarEl = document.getElementById("week-calendar");
 const rangeEl = document.getElementById("week-range");
@@ -13,6 +13,7 @@ const progressWrap = document.getElementById("progress-wrap");
 const progressBar = document.getElementById("progress-bar");
 const progressText = document.getElementById("progress-text");
 const btnToday = document.getElementById("btn-today");
+const btnSettings = document.getElementById("btn-settings");
 const popover = document.getElementById("job-popover");
 const weekEmpty = document.getElementById("week-empty");
 
@@ -296,3 +297,4 @@ document.addEventListener("click", (e) => {
 });
 
 loadEvents();
+initSettings(btnSettings);
