@@ -75,10 +75,17 @@ class LLMClient:
     @property
     def client(self) -> Any:
         if self._client is None and self.settings.llm_enabled:
-            self._client = OpenAI(
-                base_url=self.settings.llm_base_url or None,
-                api_key=self.settings.llm_api_key or None,
-            )
+            try:
+                self._client = OpenAI(
+                    base_url=self.settings.llm_base_url or None,
+                    # The OpenAI SDK requires a non-empty key even for local
+                    # servers (llama.cpp/Ollama) that ignore authentication.
+                    api_key=self.settings.llm_api_key or "not-needed",
+                )
+            except Exception:  # pragma: no cover - malformed endpoint config
+                # Never let a bad endpoint configuration escape the skills'
+                # offline fallback path.
+                return None
         return self._client
 
     # ---------------------------------------------------------------- tag
@@ -94,9 +101,11 @@ class LLMClient:
     def _tag_llm(self, *, markdown: str, filename: str) -> dict[str, Any]:
         stem = filename.rsplit(".", 1)[0] if "." in filename else filename
         prompt = (
-            "You tag study material. Return JSON only: "
-            '{"summary": "<one sentence>", "tags": ["tag1", "tag2"], '
-            '"effort_hours": <number 0.1-20>}. '
+            "You tag study material. Reply with one JSON object and nothing else, "
+            "using plain values (no angle brackets or placeholders). Example:\n"
+            '{"summary": "One sentence describing the material.", '
+            '"tags": ["photosynthesis", "biology"], "effort_hours": 1.5}\n'
+            "effort_hours must be a number between 0.1 and 20.\n"
             f"Material filename: {filename}\n\n{markdown[:4000]}"
         )
         resp = self.client.chat.completions.create(  # type: ignore[union-attr]

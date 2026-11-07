@@ -1,4 +1,4 @@
-# UX Spec (M0–M3)
+# UX Spec (M0–M5)
 
 Detailed per-page specification. This is the contract for UI work — if the implementation
 and this doc disagree, the doc wins (update the doc first, then the code).

@@ -67,7 +67,7 @@ thick enough to catch regressions. Fixtures: `samples/` (see its README — UIDs
 - each skill: mocked-LLM happy path; mocked-LLM garbage output → bounds validation rejects → fallback used
 - unconfigured client → every skill returns fallback shape (no exceptions, no network)
 
-## Web (manual, M0–M3)
+## Web (manual, M0–M5)
 Browser checklist (documented here, executed per milestone):
 - [ ] P1: import sample .ics → chips render; day panel shows venue; exam banner appears
 - [ ] P1: tick a job in day panel → card fades, revisions appear on P2

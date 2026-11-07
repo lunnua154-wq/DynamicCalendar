@@ -9,7 +9,7 @@ actually ships.
 
 A delivery is accepted only when **all** of these are true:
 
-1. **Tests** — `pytest -q` is green, including the engine invariants E1–E9 and the
+1. **Tests** — `pytest -q` is green, including the engine invariants E1–E13 and the
    M3/M4 regression tests (move/pin, revision de-duplication, upload → replan, JSON bodies).
 2. **Production build** — `cd web && npm ci && npm run build` succeeds and
    `python -m app.main` serves the built pages from `web/dist/` at `/`, `/week`, `/inbox`.

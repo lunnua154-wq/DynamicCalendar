@@ -25,6 +25,12 @@ def _settings(llm_enabled=False, **overrides):
     return Settings(**base)
 
 
+def test_local_endpoint_without_api_key_still_builds_client():
+    """llama.cpp/Ollama need no key; the SDK still requires a non-empty one."""
+    c = LLMClient(_settings(llm_enabled=True, llm_api_key=""))
+    assert c.client is not None
+
+
 # --------------------------------------------------------------------------- extract_json
 
 
