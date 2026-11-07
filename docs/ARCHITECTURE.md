@@ -121,11 +121,15 @@ re-derivation.
 - The LLM endpoint is configured via `settings` (base_url + model + key), so switching
   providers (Cloudflare Workers AI / OpenAI / Ollama / llama.cpp) is a config change, not code.
 - No key configured → `llm.enabled == False` → every skill takes its fallback path.
-- `chat` is given a compact **calendar context** (open goals, next 14 days of jobs and
-  external events, recent materials) so both the LLM and the offline fallback can answer
-  "what's due this week?".
-- `tune_settings` is only invoked when the message looks like a settings request; values
-  are bounds-validated and persisted with `updated_by='llm'`.
+- `chat` is a bounded tool-calling loop (max 5 rounds) over a narrow registry: read-only
+  tools (list_goals, list_jobs, list_events, list_materials, get_stats) and two bounded
+  writes (update_settings, set_material_effort). Tool results are returned to the client
+  as `actions` receipts; settings changes are bounds-validated and stored with
+  `updated_by='llm'`. The engine remains the only scheduler — no tool moves jobs or
+  touches external events (rule #2). Offline (no LLM configured): deterministic
+  calendar-grounded fallback, no tools offered.
+- `tune_settings` keyword path retired: settings changes now go through the explicit
+  `update_settings` tool invoked by the model.
 
 ## Progress stats
 
