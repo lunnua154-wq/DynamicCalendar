@@ -317,12 +317,37 @@ async def inbox_upload(
             )
             relation = str(cluster_result.get("relation", "new"))
             topic_id = cluster_result.get("topic_id")
+            cluster_reason = str(cluster_result.get("reason", ""))
 
             def members_of(tid: str) -> list[dict[str, Any]]:
                 return [m for m in db.list_materials(conn) if m["topic_id"] == tid]
 
+            status = "ready"
+            duplicate_of: str | None = None
+            if relation == "duplicate":
+                status = "duplicate"
+                if topic_id is None:
+                    # LLM flagged a duplicate but named no topic: resolve by
+                    # content hash so we link to the original material instead
+                    # of spawning an empty topic.
+                    existing = db.find_material_by_hash(conn, content_hash)
+                    if existing is not None:
+                        topic_id = existing["topic_id"]
+                        duplicate_of = existing["id"]
+                if topic_id:
+                    members = members_of(topic_id)
+                    if members and duplicate_of is None:
+                        duplicate_of = members[0]["id"]
+            elif relation == "version":
+                if topic_id:
+                    members = members_of(topic_id)
+                    if members:
+                        latest = members[0]
+                        db.update_material(conn, latest["id"], status="superseded")
+                        duplicate_of = latest["id"]
+
             if topic_id is None:
-                # start a fresh topic for this file
+                # start a fresh topic for this file (relation == "new")
                 topic_id = db.create_topic(
                     conn,
                     name=tagged["tags"][0] if tagged["tags"] else filename,
@@ -331,20 +356,6 @@ async def inbox_upload(
                 existing_topics.append(
                     {"id": topic_id, "name": tagged["tags"][0] if tagged["tags"] else filename}
                 )
-
-            status = "ready"
-            duplicate_of: str | None = None
-            if relation == "duplicate":
-                status = "duplicate"
-                members = members_of(topic_id)
-                if members:
-                    duplicate_of = members[0]["id"]
-            elif relation == "version":
-                members = members_of(topic_id)
-                if members:
-                    latest = members[0]
-                    db.update_material(conn, latest["id"], status="superseded")
-                    duplicate_of = latest["id"]
 
             db.create_material(
                 conn,
@@ -374,6 +385,7 @@ async def inbox_upload(
                     "effort_hours": tagged["effort_hours"],
                     "duplicate_of": duplicate_of,
                     "cluster_relation": relation,
+                    "cluster_reason": cluster_reason,
                 }
             )
         return results
