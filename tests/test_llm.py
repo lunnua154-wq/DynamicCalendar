@@ -1,10 +1,13 @@
 """LLM skill tests — mocked LLM happy path, garbage output -> fallback,
 and unconfigured client -> offline fallback (no network)."""
 
+import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.config import Settings
-from app.llm import LLMClient
+from app.llm import LLMClient, extract_json
 
 
 def _settings(llm_enabled=False, **overrides):
@@ -20,6 +23,27 @@ def _settings(llm_enabled=False, **overrides):
     )
     base.update(overrides)
     return Settings(**base)
+
+
+# --------------------------------------------------------------------------- extract_json
+
+
+def test_extract_json_strips_fences():
+    text = "```json\n{\"a\": 1, \"b\": [1, 2]}\n```"
+    assert extract_json(text) == {"a": 1, "b": [1, 2]}
+
+
+def test_extract_json_first_object_only():
+    text = "Here is the result: {\"ok\": true} and then {\"other\": 1}"
+    assert extract_json(text) == {"ok": True}
+
+
+def test_extract_json_garbage_raises():
+    with pytest.raises(ValueError):
+        extract_json("not json at all {{{")
+
+
+# --------------------------------------------------------------------------- tag
 
 
 def test_tag_offline_fallback():
@@ -43,6 +67,22 @@ def test_tag_mocked_happy_path():
     assert out["effort_hours"] == 3.0
 
 
+def test_tag_fenced_json_parses():
+    fake = MagicMock()
+    fake.chat.completions.create.return_value.choices[
+        0
+    ].message.content = (
+        "```json\n{\"summary\": \"Limits\", \"tags\": [\"math\"], "
+        "\"effort_hours\": 3.0}\n```"
+    )
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.tag(markdown="# Limits", filename="limits.pdf")
+    assert out["summary"] == "Limits"
+    assert out["tags"] == ["math"]
+    assert out["effort_hours"] == 3.0
+
+
 def test_tag_garbage_output_falls_back():
     fake = MagicMock()
     fake.chat.completions.create.return_value.choices[
@@ -53,6 +93,9 @@ def test_tag_garbage_output_falls_back():
     out = c.tag(markdown="# Limits", filename="limits.pdf")
     assert out["tags"] == ["limits"]
     assert out["effort_hours"] == 1.0
+
+
+# --------------------------------------------------------------------------- cluster
 
 
 def test_cluster_offline_new_topic():
@@ -78,11 +121,128 @@ def test_cluster_offline_duplicate_by_hash():
     assert out["relation"] == "duplicate"
 
 
+def test_cluster_accepts_extra_kwargs():
+    c = LLMClient(_settings(llm_enabled=False))
+    out = c.cluster(
+        content_hash="abc",
+        filename="new.md",
+        existing_topics=[],
+        existing_material_hashes=[],
+        markdown="# Limits\ncontent here",
+        topic_name="Limits",
+        effort_hours=2.0,
+    )
+    assert out["relation"] == "new"
+    assert out["topic_id"] is None
+
+
+def test_cluster_fenced_json_parses_and_validates_topic_id():
+    existing = [{"id": "topic-1", "name": "Limits"}]
+    fake = MagicMock()
+    fake.chat.completions.create.return_value.choices[
+        0
+    ].message.content = (
+        "```json\n{\"topic_id\": \"topic-1\", \"relation\": \"version\", "
+        "\"reason\": \"update\"}\n```"
+    )
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.cluster(
+        content_hash="new-hash",
+        filename="v2.md",
+        existing_topics=existing,
+        existing_material_hashes=[],
+        markdown="# Limits v2",
+        effort_hours=2.0,
+    )
+    assert out["relation"] == "version"
+    assert out["topic_id"] == "topic-1"
+
+
+def test_cluster_unknown_topic_id_becomes_none():
+    existing = [{"id": "topic-1", "name": "Limits"}]
+    fake = MagicMock()
+    fake.chat.completions.create.return_value.choices[
+        0
+    ].message.content = (
+        '{"topic_id": "no-such-topic", "relation": "new", "reason": "x"}'
+    )
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.cluster(
+        content_hash="new-hash",
+        filename="v2.md",
+        existing_topics=existing,
+        existing_material_hashes=[],
+    )
+    assert out["topic_id"] is None
+
+
+# --------------------------------------------------------------------------- chat
+
+
 def test_chat_offline_fallback():
     c = LLMClient(_settings(llm_enabled=False))
     out = c.chat(message="what's due?", history=[])
     assert out["llm"] == "off"
-    assert "LLM not configured" in out["reply"]
+    # Offline fallback is genuinely useful, never just "LLM not configured".
+    assert "LLM not configured" not in out["reply"] or "upcoming" in out["reply"]
+    assert len(out["reply"]) > 0
+
+
+def test_chat_offline_answers_schedule_with_calendar_data():
+    c = LLMClient(_settings(llm_enabled=False))
+    context = {
+        "now": "2026-11-03T12:00:00Z",
+        "goals": [
+            {
+                "id": "g1",
+                "title": "Limits",
+                "deadline": "2026-12-18T00:00:00Z",
+                "progress": 0.0,
+            }
+        ],
+        "jobs": [
+            {
+                "id": "j1",
+                "status": "pending",
+                "kind": "learn",
+                "slot_start": "2026-11-09T14:00:00Z",
+                "slot_end": "2026-11-09T14:50:00Z",
+                "material_title": "Limits chapter",
+            }
+        ],
+        "events": [],
+        "materials": [],
+    }
+    out = c.chat(message="what's due this week?", history=[], context=context)
+    assert out["llm"] == "off"
+    assert "14:00" in out["reply"]
+    assert "Limits chapter" in out["reply"]
+    assert "learn" in out["reply"]
+
+
+def test_chat_offline_summarizes_material():
+    c = LLMClient(_settings(llm_enabled=False))
+    context = {
+        "materials": [
+            {
+                "id": "m1",
+                "filename": "limits.md",
+                "summary": "Limits and continuity summary.",
+                "tags": [],
+                "topic_id": None,
+                "status": "ready",
+                "effort_hours": 2.0,
+            }
+        ],
+        "goals": [],
+        "jobs": [],
+        "events": [],
+    }
+    out = c.chat(message="summarize limits.md", history=[], context=context)
+    assert out["llm"] == "off"
+    assert out["reply"] == "Limits and continuity summary."
 
 
 def test_chat_mocked_happy_path():
@@ -97,7 +257,48 @@ def test_chat_mocked_happy_path():
     assert out["reply"] == "Two goals are open."
 
 
+def test_chat_passes_context_to_llm():
+    fake = MagicMock()
+    fake.chat.completions.create.return_value.choices[
+        0
+    ].message.content = "ok"
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    context = {"goals": [], "jobs": [], "events": [], "materials": []}
+    c.chat(message="hi", history=[], context=context)
+    call_kwargs = fake.chat.completions.create.call_args.kwargs
+    system_msg = call_kwargs["messages"][0]["content"]
+    assert "Calendar context" in system_msg
+
+
+# --------------------------------------------------------------------------- tune_settings
+
+
 def test_tune_settings_offline_noop():
     c = LLMClient(_settings(llm_enabled=False))
     out = c.tune_settings(context="busy week")
     assert out == {}  # offline: settings keep current values
+
+
+def test_tune_settings_fenced_json_parses():
+    fake = MagicMock()
+    fake.chat.completions.create.return_value.choices[
+        0
+    ].message.content = (
+        "```json\n{\"daily_capacity_hours\": 6.0, \"slot_minutes\": 30}\n```"
+    )
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.tune_settings(context="busy week")
+    assert out == {"daily_capacity_hours": 6.0, "slot_minutes": 30}
+
+
+def test_tune_settings_out_of_bounds_falls_back():
+    fake = MagicMock()
+    fake.chat.completions.create.return_value.choices[
+        0
+    ].message.content = '{"daily_capacity_hours": 999, "slot_minutes": 30}'
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.tune_settings(context="busy week")
+    assert out == {}  # validation error -> fallback (no exception)

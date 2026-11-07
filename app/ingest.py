@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import db, engine
+from . import db, engine, ocr
 from .config import Settings
 
 
@@ -41,15 +41,19 @@ def store_upload(
     ch = content_hash(raw)
     existing = db.find_material_by_hash(conn, ch)
     if existing is not None:
-        # Create a duplicate material record referencing the original so the
-        # caller gets a distinct row with status='duplicate'.
+        # Link to the root ORIGINAL (never to another duplicate) so the
+        # duplicate_of chain always terminates at the first ingested copy.
+        original = db.find_original_material_by_hash(conn, ch)
+        original_id = original["id"] if original is not None else existing["id"]
+        # Create a distinct duplicate material record referencing the original.
         dup_id = db.new_id()
         dup_original = originals_dir / f"{dup_id}_{filename}"
         dup_original.write_bytes(raw)
+        topic_id = original["topic_id"] if original is not None else existing["topic_id"]
         material_id = db.create_material(
             conn,
-            goal_id=existing["goal_id"],
-            topic_id=existing["topic_id"],
+            goal_id=original["goal_id"] if original is not None else existing["goal_id"],
+            topic_id=topic_id,
             filename=filename,
             original_path=str(dup_original),
             markdown_path=existing["markdown_path"],
@@ -58,13 +62,13 @@ def store_upload(
             tags=existing["tags"],
             effort_hours=existing["effort_hours"],
             status="duplicate",
-            duplicate_of=existing["id"],
+            duplicate_of=original_id,
         )
         conn.commit()
         return {
             "status": "duplicate",
             "material_id": material_id,
-            "duplicate_of": existing["id"],
+            "duplicate_of": original_id,
         }
 
     originals_dir.mkdir(parents=True, exist_ok=True)
@@ -139,10 +143,22 @@ def process_material(
             conn,
             material_id,
             status="error",
-            status_reason=f"unsupported format ({original_path.suffix})",
+            status_reason=f"convert failed: {exc}",
         )
         conn.commit()
         return dict(db.get_material(conn, material_id))
+
+    # --- optional OCR for scanned PDFs --------------------------------------
+    if (
+        original_path.suffix.lower() == ".pdf"
+        and len(markdown_text or "") < settings.ocr_min_chars
+    ):
+        try:
+            ocr_text = ocr.ocr_pdf(str(original_path), settings)
+        except Exception:  # never fail ingest on OCR
+            ocr_text = None
+        if ocr_text:
+            markdown_text = ocr_text
 
     markdown_dir.mkdir(parents=True, exist_ok=True)
     markdown_path = markdown_dir / f"{material_id}.md"
@@ -166,8 +182,15 @@ def process_material(
         filename=filename,
         existing_topics=existing_topics,
         existing_material_hashes=existing_hashes,
+        markdown=markdown_text,
         effort_hours=effort,
     )
+
+    # The LLM may return a topic_id that isn't in the existing set: ignore it.
+    topic_ids = {t["id"] for t in existing_topics}
+    if clustered.get("topic_id") is not None and clustered["topic_id"] not in topic_ids:
+        clustered = dict(clustered)
+        clustered["topic_id"] = None
 
     relation = clustered.get("relation", "new")
     topic_id: str | None = None
@@ -253,6 +276,8 @@ def process_material(
 
     result = dict(db.get_material(conn, material_id))
     result["topic_name"] = topic_name
+    result["cluster_relation"] = relation
+    result["cluster_reason"] = str(clustered.get("reason", ""))
     return result
 
 
