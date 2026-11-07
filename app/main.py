@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -56,6 +57,19 @@ app.add_middleware(
 @app.exception_handler(DynaCalendarError)
 async def _domain_error_handler(_, exc: DynaCalendarError) -> JSONResponse:
     return JSONResponse({"error": exc.message}, status_code=exc.status_code)
+
+
+@app.exception_handler(HTTPException)
+async def _http_error_handler(_, exc: HTTPException) -> JSONResponse:
+    """Normalise FastAPI's ``detail`` into the documented error envelope."""
+    return JSONResponse({"error": str(exc.detail)}, status_code=exc.status_code)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_, exc: RequestValidationError) -> JSONResponse:
+    errors = exc.errors()
+    first = errors[0].get("msg") if errors else "invalid request"
+    return JSONResponse({"error": str(first), "detail": errors}, status_code=422)
 
 
 # --------------------------------------------------------------------------- helpers
