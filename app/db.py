@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS jobs (
                  CHECK (status IN ('pending','done','skipped','conflicted')),
   done_at        TEXT NULL,
   revision_round INTEGER NOT NULL DEFAULT 0,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  pinned         INTEGER NOT NULL DEFAULT 0,
+  parent_job_id  TEXT NULL REFERENCES jobs(id)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -117,8 +119,22 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate_jobs_columns(conn)
     _seed_default_settings(conn)
     conn.commit()
+
+
+def _migrate_jobs_columns(conn: sqlite3.Connection) -> None:
+    """Light migrations for existing databases created before the ``pinned`` /
+    ``parent_job_id`` columns existed. Safe to run on a fresh DB (columns are
+    already present via SCHEMA) and on an old DB (columns are added in place)."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+    if "pinned" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+    if "parent_job_id" not in existing:
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN parent_job_id TEXT NULL REFERENCES jobs(id)"
+        )
 
 
 def _seed_default_settings(conn: sqlite3.Connection) -> None:
@@ -146,7 +162,7 @@ def list_events(
             clauses.append("dtstart < ?")
             params.append(to_iso)
         sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY dtstart, title"
+    sql += " ORDER BY dtstart, title, id"
     rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
@@ -268,7 +284,7 @@ def list_jobs(
         params.append(to_iso)
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY e.dtstart, e.title"
+    sql += " ORDER BY e.dtstart, e.title, e.id"
     rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
@@ -297,14 +313,16 @@ def create_job(
     duration_min: int,
     status: str = "pending",
     revision_round: int = 0,
+    pinned: int = 0,
+    parent_job_id: str | None = None,
 ) -> str:
     job_id = new_id()
     conn.execute(
         """
         INSERT INTO jobs
           (id, event_id, goal_id, material_id, kind, duration_min, status,
-           revision_round, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           revision_round, created_at, pinned, parent_job_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job_id,
@@ -316,6 +334,8 @@ def create_job(
             status,
             revision_round,
             now_utc(),
+            pinned,
+            parent_job_id,
         ),
     )
     return job_id
@@ -337,7 +357,7 @@ def jobs_for_goal(conn: sqlite3.Connection, goal_id: str) -> list[dict[str, Any]
         SELECT j.*, e.dtstart AS slot_start, e.dtend AS slot_end
         FROM jobs j JOIN events e ON e.id = j.event_id
         WHERE j.goal_id = ?
-        ORDER BY e.dtstart
+        ORDER BY e.dtstart, j.id
         """,
         (goal_id,),
     ).fetchall()
@@ -453,6 +473,25 @@ def list_topics(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def get_topic(conn: sqlite3.Connection, topic_id: str) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
+    if row is None:
+        raise NotFoundError(f"topic {topic_id} not found")
+    return dict(row)
+
+
+def update_topic(
+    conn: sqlite3.Connection, topic_id: str, **fields: Any
+) -> dict[str, Any]:
+    if not fields:
+        return get_topic(conn, topic_id)
+    get_topic(conn, topic_id)  # raises if missing
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [topic_id]
+    conn.execute(f"UPDATE topics SET {cols} WHERE id = ?", values)
+    return get_topic(conn, topic_id)
+
+
 def get_material(conn: sqlite3.Connection, material_id: str) -> dict[str, Any]:
     row = conn.execute(
         "SELECT * FROM materials WHERE id = ?", (material_id,)
@@ -476,9 +515,45 @@ def update_material(
 
 def find_material_by_hash(conn: sqlite3.Connection, content_hash: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT * FROM materials WHERE content_hash = ?", (content_hash,)
+        "SELECT * FROM materials WHERE content_hash = ? "
+        "ORDER BY created_at ASC LIMIT 1",
+        (content_hash,),
     ).fetchone()
     return None if row is None else dict(row)
+
+
+def find_original_material_by_hash(
+    conn: sqlite3.Connection, content_hash: str
+) -> dict[str, Any] | None:
+    """Return the root (non-duplicate) material for a content hash.
+
+    Prefers the earliest non-duplicate row; if every row with this hash is a
+    duplicate, follows the ``duplicate_of`` chain back to the original so a
+    new duplicate is always linked to the original (never to another duplicate).
+    """
+    row = conn.execute(
+        "SELECT * FROM materials WHERE content_hash = ? AND status != 'duplicate'"
+        " ORDER BY created_at ASC LIMIT 1",
+        (content_hash,),
+    ).fetchone()
+    if row is not None:
+        return dict(row)
+    row = conn.execute(
+        "SELECT * FROM materials WHERE content_hash = ? ORDER BY created_at ASC LIMIT 1",
+        (content_hash,),
+    ).fetchone()
+    if row is None:
+        return None
+    cur = dict(row)
+    while cur.get("duplicate_of"):
+        parent = conn.execute(
+            "SELECT * FROM materials WHERE id = ?", (cur["duplicate_of"],)
+        ).fetchone()
+        if parent is None:
+            break
+        cur = dict(parent)
+    return cur
+
 
 
 # ---------------------------------------------------------------- chat
@@ -496,6 +571,6 @@ def add_chat_message(
 
 def list_chat_messages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT * FROM chat_messages ORDER BY created_at"
+        "SELECT * FROM chat_messages ORDER BY created_at, rowid"
     ).fetchall()
     return [dict(r) for r in rows]

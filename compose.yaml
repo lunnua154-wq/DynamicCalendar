@@ -1,0 +1,35 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Named volume: always writable by the in-image non-root uid, unlike a
+      # fresh host bind-mount of ./data (root-owned) which would 500 every DB
+      # write. Switch back to ./data:/data if you need the DB on the host.
+      - dynacalendar-data:/data
+    environment:
+      - DYNACALENDAR_DB=/data/dynacalendar.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional local LLM provider (Ollama, OpenAI-compatible). Opt in with:
+  #   docker compose --profile llm up
+  # No API keys are stored here.
+  ollama:
+    image: ollama/ollama
+    profiles:
+      - llm
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+
+volumes:
+  dynacalendar-data:
+  ollama-data:

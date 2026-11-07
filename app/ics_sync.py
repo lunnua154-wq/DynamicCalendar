@@ -71,7 +71,9 @@ def _component_events(component: Any) -> list[dict[str, Any]]:
     dtstart = _to_utc(dtstart_raw.dt)
     dtend = _to_utc(dtend_raw.dt)
 
-    all_day = 1 if isinstance(dtstart_raw.dt, date) else 0
+    # A pure `date` means a VALUE=DATE (all-day) VEVENT; datetimes carry
+    # times and are never hidden in time-grid views.
+    all_day = 1 if isinstance(dtstart_raw.dt, date) and not isinstance(dtstart_raw.dt, datetime) else 0
 
     out: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc)
@@ -112,6 +114,7 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
         imported = 0
         skipped = 0
         exams_found: list[str] = []
+        exams: list[dict[str, Any]] = []
 
         with conn:  # single transaction — rollback on any failure
             for component in cal.walk("VEVENT"):
@@ -123,15 +126,12 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                 for ev in evs:
                     uid = ev["ics_uid"]
                     is_exam = "exam" in [c.lower() for c in ev["categories"]]
-                    if is_exam:
-                        exams_found.append(ev["title"])
-
                     source = getattr(file_obj, "name", None)
 
                     existing = None
                     if uid:
                         existing = conn.execute(
-                            "SELECT id, dtstart, dtend, title, venue, description"
+                            "SELECT id, dtstart, dtend, title, venue, description, all_day"
                             " FROM events WHERE ics_uid = ? AND kind = 'external'",
                             (uid,),
                         ).fetchone()
@@ -143,6 +143,7 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                             or existing["title"] != ev["title"]
                             or existing["venue"] != ev["venue"]
                             or existing["description"] != ev["description"]
+                            or bool(existing["all_day"]) != bool(ev["all_day"])
                         )
                         if not changed:
                             skipped += 1
@@ -157,9 +158,10 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                             venue=ev["venue"],
                             description=ev["description"],
                         )
+                        event_id = existing["id"]
                         imported += 1
                     else:
-                        create_event(
+                        event_id = create_event(
                             conn,
                             kind="external",
                             title=ev["title"],
@@ -174,7 +176,24 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                         )
                         imported += 1
 
-        return {"imported": imported, "skipped": skipped, "exams_found": exams_found}
+                    if is_exam:
+                        exams_found.append(ev["title"])
+                        exams.append(
+                            {
+                                "event_id": event_id,
+                                "title": ev["title"],
+                                "dtstart": ev["dtstart"],
+                                "dtend": ev["dtend"],
+                                "venue": ev["venue"],
+                            }
+                        )
+
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "exams_found": exams_found,
+            "exams": exams,
+        }
     except IcsImportError:
         raise
     except Exception as exc:

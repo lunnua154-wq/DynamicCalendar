@@ -5,7 +5,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/daygrid";
 import "../tailwind.css";
-import { api, toast, dialog, utcTime, utcDay, setText, initSettings } from "./common.js";
+import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings } from "./common.js";
 
 const calendarEl = document.getElementById("calendar");
 const monthEl = document.getElementById("calendar-month");
@@ -25,7 +25,9 @@ const btnExamDismiss = document.getElementById("btn-exam-dismiss");
 const emptyState = document.getElementById("empty-state");
 
 let calendar;
-let pendingExam = null; // {title, dtstart, venue}
+let pendingExam = null; // {event_id, title, dtstart, dtend, venue} — full exam object from the import response
+const statsPanel = document.getElementById("stats-panel");
+const statsList = document.getElementById("stats-list");
 
 function monthRange(date) {
   const start = new Date(date.getFullYear(), date.getMonth(), 1);
@@ -68,14 +70,26 @@ function renderEvent(arg) {
   container.appendChild(venueLine);
 
   if (job && job.status !== "done") {
-    // checkbox for pending jobs
+    // checkbox for pending jobs (optimistic tick, reverts on failure)
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.className = "mt-1.5";
+    cb.className = "mt-1.5 shrink-0";
     cb.title = "Mark done";
     cb.onclick = async (ev) => {
       ev.stopPropagation();
-      await tickJob(job.id);
+      cb.disabled = true;
+      cb.checked = true;
+      container.classList.add("line-through", "text-slate-400", "opacity-60");
+      try {
+        await tickJob(job.id);
+        toast("Job marked done", "success");
+      } catch (err) {
+        cb.checked = false;
+        container.classList.remove("line-through", "text-slate-400", "opacity-60");
+        toast("Failed: " + err.message, "error");
+      } finally {
+        cb.disabled = false;
+      }
     };
     container.appendChild(cb);
   }
@@ -105,27 +119,80 @@ async function loadEvents() {
       });
     });
     setText(monthEl, view.currentStart.toLocaleDateString(undefined, { month: "long", year: "numeric" }));
-    emptyState.hidden = events.length === 0;
-    // exam banner: any external event with EXAM category isn't stored, so we
-    // detect via goals/exams is handled server-side; here we just show banner
-    // if an exam-ish title exists and no goal yet. Kept simple for M0.
+    emptyState.classList.toggle("hidden", events.length === 0);
+    renderStats();
   } catch (err) {
     toast("Failed to load calendar: " + err.message, "error");
   }
 }
 
-async function tickJob(jobId) {
+/** Goal progress / stats panel (M4/M5). Populated from GET /api/stats.
+ *  Hidden when there are no open goals. */
+async function renderStats() {
+  if (!statsPanel || !statsList) return;
   try {
-    await api(`jobs/${jobId}/complete`, { method: "POST" });
-    toast("Job marked done", "success");
-    loadEvents();
-  } catch (err) {
-    toast("Failed to mark done: " + err.message, "error");
+    const raw = await api("stats");
+    const payload = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const goals = Array.isArray(payload.goals) ? payload.goals : [];
+    const open = goals.filter((g) => g.status !== "closed" && g.status !== "done" && g.status !== "completed");
+    statsPanel.classList.toggle("hidden", open.length === 0);
+    statsList.innerHTML = "";
+    const totals = payload.totals || {};
+    const panelRevisionsDue = totals.revisions_due != null ? totals.revisions_due : null;
+    open.forEach((g) => {
+      const total = g.total_effort_hours != null ? Number(g.total_effort_hours) : 0;
+      const done = g.done_effort_hours != null ? Number(g.done_effort_hours) : 0;
+      let progress = g.progress;
+      if (progress == null) progress = total > 0 ? done / total : 0;
+      if (progress > 1) progress = progress / 100;
+      const pct = Math.round(Math.max(0, Math.min(1, progress)) * 100);
+
+      const row = document.createElement("div");
+      row.className = "flex items-center gap-3 px-3 py-2 rounded border border-slate-200 bg-slate-50";
+
+      const left = document.createElement("div");
+      left.className = "flex-1 min-w-0";
+      const name = document.createElement("div");
+      name.className = "text-xs font-medium text-slate-900 truncate";
+      name.textContent = g.title || "Goal";
+      left.appendChild(name);
+      const sub = document.createElement("div");
+      sub.className = "flex items-center gap-2 text-[10px] text-slate-500";
+      const bar = document.createElement("div");
+      bar.className = "h-1.5 flex-1 min-w-[120px] bg-slate-200 rounded overflow-hidden";
+      const fill = document.createElement("div");
+      fill.className = "h-full bg-blue-600";
+      fill.style.width = `${pct}%`;
+      bar.appendChild(fill);
+      sub.appendChild(bar);
+      const doneText = document.createElement("span");
+      doneText.textContent = `${formatHours(done)} / ${formatHours(total)}`;
+      sub.appendChild(doneText);
+      left.appendChild(sub);
+
+      const right = document.createElement("div");
+      right.className = "text-[10px] text-slate-500 whitespace-nowrap";
+      const due = g.revisions_due != null ? g.revisions_due : panelRevisionsDue;
+      right.textContent = `planned ${g.planned_jobs ?? 0}${due != null ? ` · due in 7d ${due}` : ""}`;
+
+      row.appendChild(left);
+      row.appendChild(right);
+      statsList.appendChild(row);
+    });
+  } catch {
+    // stats endpoint may not exist yet; keep the panel hidden rather than
+    // breaking the month grid.
+    statsPanel.classList.toggle("hidden", true);
   }
 }
 
+async function tickJob(jobId) {
+  await api(`jobs/${jobId}/complete`, { method: "POST" });
+  loadEvents();
+}
+
 function openDay(date, event) {
-  dayPanel.hidden = false;
+  dayPanel.classList.toggle("hidden", false);
   setText(dayPanelDate, utcDay(date) + " · " + date.toLocaleDateString(undefined, { weekday: "long" }));
   dayPanelList.innerHTML = "";
   // gather events for that day
@@ -156,7 +223,10 @@ function openDay(date, event) {
     title.textContent = e.title;
     const venue = document.createElement("div");
     venue.className = "text-[11px] text-slate-500 truncate";
-    venue.textContent = e.extendedProps.venue ? `· ${e.extendedProps.venue}` : (job ? `· ${job.kind}` : "");
+    let venueText = "";
+    if (e.extendedProps.venue) venueText = `· ${e.extendedProps.venue}`;
+    else if (job) venueText = `· ${job.duration_min != null ? job.duration_min + "m" : ""} ${job.kind || ""}`.trim();
+    venue.textContent = venueText;
     info.appendChild(time);
     info.appendChild(title);
     info.appendChild(venue);
@@ -169,15 +239,17 @@ function openDay(date, event) {
       cb.onclick = async (ev) => {
         ev.stopPropagation();
         cb.disabled = true;
+        cb.checked = true;
+        row.classList.add("line-through", "text-slate-400", "opacity-60");
         try {
-          await api(`jobs/${job.id}/complete`, { method: "POST" });
-          cb.checked = true;
-          row.classList.add("line-through", "text-slate-400", "opacity-60");
+          await tickJob(job.id);
           toast("Job marked done", "success");
-          loadEvents();
         } catch (err) {
-          cb.disabled = false;
+          cb.checked = false;
+          row.classList.remove("line-through", "text-slate-400", "opacity-60");
           toast("Failed: " + err.message, "error");
+        } finally {
+          cb.disabled = false;
         }
       };
       row.appendChild(cb);
@@ -188,7 +260,7 @@ function openDay(date, event) {
   });
 }
 
-btnClose.onclick = () => (dayPanel.hidden = true);
+btnClose.onclick = () => dayPanel.classList.toggle("hidden", true);
 btnToday.onclick = () => calendar.today();
 btnImport.onclick = () => fileIcs.click();
 fileIcs.onchange = async () => {
@@ -197,46 +269,46 @@ fileIcs.onchange = async () => {
   const form = new FormData();
   form.append("file", file);
   try {
-    const res = await fetch("/api/ics/import", { method: "POST", body: form });
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      throw new Error(d.error || "import failed");
-    }
-    const d = await res.json();
-    toast(`Imported ${d.imported} events (${d.skipped} skipped)`, "success");
+    const d = await api("ics/import", { method: "POST", body: form });
+    toast(`Imported ${d.imported ?? 0} events (${d.skipped ?? 0} skipped)`, "success");
     fileIcs.value = "";
     loadEvents();
-    if (d.exams_found && d.exams_found.length && !pendingExam) {
-      pendingExam = d.exams_found[0];
-      showExamBanner(d.exams_found);
+    const exams =
+      d.exams ||
+      (d.exams_found && Array.isArray(d.exams_found)
+        ? d.exams_found.map((t) => ({ title: t }))
+        : []);
+    if (exams.length && !pendingExam) {
+      pendingExam = exams[0];
+      showExamBanner(exams);
     }
   } catch (err) {
     toast("Import failed: " + err.message, "error");
   }
 };
 
-function showExamBanner(titles) {
-  setText(examBannerText, `Exam detected: ${titles.join(", ")} — create a goal to schedule study around it.`);
-  examBanner.hidden = false;
+function showExamBanner(exams) {
+  const ex = exams[0];
+  pendingExam = ex;
+  setText(
+    examBannerText,
+    `Exam detected: ${ex.title} — ${utcDay(ex.dtstart)} ${utcTime(ex.dtstart)}–${utcTime(ex.dtend)} @ ${ex.venue || "TBD"}`,
+  );
+  examBanner.classList.toggle("hidden", false);
 }
-btnExamDismiss.onclick = () => (examBanner.hidden = true);
+btnExamDismiss.onclick = () => examBanner.classList.toggle("hidden", true);
 btnExamCreate.onclick = async () => {
   if (!pendingExam) return;
-  const ok = await dialog("Create goal", `Create a goal for "${pendingExam}"?`);
+  const ok = await dialog("Create goal", `Create a goal for "${pendingExam.title}"?`);
   if (!ok) return;
   try {
-    // deadline default: the exam date; user can adjust later. Use a placeholder
-    // goal; server replans. We need the exam event id — not available here, so
-    // create goal with the exam title as deadline = today+0 (placeholder).
-    const res = await fetch("/api/goals", {
+    await api("goals", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: pendingExam, deadline: new Date().toISOString().slice(0, 10) }),
+      body: { title: pendingExam.title, exam_event_id: pendingExam.event_id },
     });
-    if (!res.ok) throw new Error("goal create failed");
     toast("Goal created", "success");
     pendingExam = null;
-    examBanner.hidden = true;
+    examBanner.classList.toggle("hidden", true);
     loadEvents();
   } catch (err) {
     toast("Failed to create goal: " + err.message, "error");
@@ -246,14 +318,16 @@ btnExamCreate.onclick = async () => {
 btnReplan.onclick = async () => {
   const ok = await dialog("Re-plan", "Recompute all pending future study work?");
   if (!ok) return;
-  // Re-plan every open goal.
+  // Re-plan every open goal; sum up moved jobs.
   try {
     const goals = await api("goals");
+    let moved = 0;
     for (const g of goals) {
-      if (g.status !== "open") continue;
-      await api(`goals/${g.id}/replan`, { method: "POST" });
+      if (g.status === "closed" || g.status === "done" || g.status === "completed") continue;
+      const res = await api(`goals/${g.id}/replan`, { method: "POST" });
+      moved += res.moved_count ?? res.moved_jobs?.length ?? 0;
     }
-    toast("Re-planned all goals", "success");
+    toast(`Re-planned ${moved} jobs`, "success");
     loadEvents();
   } catch (err) {
     toast("Re-plan failed: " + err.message, "error");

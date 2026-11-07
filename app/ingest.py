@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import db, engine
+from . import db, engine, ocr
 from .config import Settings
 
 
@@ -41,15 +41,19 @@ def store_upload(
     ch = content_hash(raw)
     existing = db.find_material_by_hash(conn, ch)
     if existing is not None:
-        # Create a duplicate material record referencing the original so the
-        # caller gets a distinct row with status='duplicate'.
+        # Link to the root ORIGINAL (never to another duplicate) so the
+        # duplicate_of chain always terminates at the first ingested copy.
+        original = db.find_original_material_by_hash(conn, ch)
+        original_id = original["id"] if original is not None else existing["id"]
+        # Create a distinct duplicate material record referencing the original.
         dup_id = db.new_id()
         dup_original = originals_dir / f"{dup_id}_{filename}"
         dup_original.write_bytes(raw)
+        topic_id = original["topic_id"] if original is not None else existing["topic_id"]
         material_id = db.create_material(
             conn,
-            goal_id=existing["goal_id"],
-            topic_id=existing["topic_id"],
+            goal_id=original["goal_id"] if original is not None else existing["goal_id"],
+            topic_id=topic_id,
             filename=filename,
             original_path=str(dup_original),
             markdown_path=existing["markdown_path"],
@@ -58,13 +62,13 @@ def store_upload(
             tags=existing["tags"],
             effort_hours=existing["effort_hours"],
             status="duplicate",
-            duplicate_of=existing["id"],
+            duplicate_of=original_id,
         )
         conn.commit()
         return {
             "status": "duplicate",
             "material_id": material_id,
-            "duplicate_of": existing["id"],
+            "duplicate_of": original_id,
         }
 
     originals_dir.mkdir(parents=True, exist_ok=True)
@@ -139,10 +143,22 @@ def process_material(
             conn,
             material_id,
             status="error",
-            status_reason=f"unsupported format ({original_path.suffix})",
+            status_reason=f"convert failed: {exc}",
         )
         conn.commit()
         return dict(db.get_material(conn, material_id))
+
+    # --- optional OCR for scanned PDFs --------------------------------------
+    if (
+        original_path.suffix.lower() == ".pdf"
+        and len(markdown_text or "") < settings.ocr_min_chars
+    ):
+        try:
+            ocr_text = ocr.ocr_pdf(str(original_path), settings)
+        except Exception:  # never fail ingest on OCR
+            ocr_text = None
+        if ocr_text:
+            markdown_text = ocr_text
 
     markdown_dir.mkdir(parents=True, exist_ok=True)
     markdown_path = markdown_dir / f"{material_id}.md"
@@ -166,25 +182,48 @@ def process_material(
         filename=filename,
         existing_topics=existing_topics,
         existing_material_hashes=existing_hashes,
+        markdown=markdown_text,
         effort_hours=effort,
     )
+
+    # The LLM may return a topic_id that isn't in the existing set: ignore it.
+    topic_ids = {t["id"] for t in existing_topics}
+    if clustered.get("topic_id") is not None and clustered["topic_id"] not in topic_ids:
+        clustered = dict(clustered)
+        clustered["topic_id"] = None
 
     relation = clustered.get("relation", "new")
     topic_id: str | None = None
     topic_name: str | None = None
 
     if relation == "duplicate":
-        # Duplicate of an existing material: share its topic.
-        dupe_material_id = clustered.get("topic_id")
-        if dupe_material_id is not None:
-            dupe = db.get_material(conn, dupe_material_id)
-            topic_id = dupe["topic_id"]
-            if topic_id is not None:
-                topic_row = conn.execute(
-                    "SELECT name FROM topics WHERE id = ?", (topic_id,)
+        # The cluster verdict classifies the file against an existing *topic*,
+        # so ``clustered['topic_id']`` is a topic id — not a material id.
+        # Link the duplicate to the root material of that topic (never to
+        # this material, and never to another duplicate) and stop work.
+        topic_id = clustered.get("topic_id")
+        dupe_material_id = None
+        if topic_id is not None:
+            row = conn.execute(
+                """
+                SELECT id FROM materials
+                WHERE topic_id = ? AND status NOT IN ('superseded', 'duplicate')
+                ORDER BY created_at ASC LIMIT 1
+                """,
+                (topic_id,),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT id FROM materials WHERE topic_id = ? "
+                    "ORDER BY created_at ASC LIMIT 1",
+                    (topic_id,),
                 ).fetchone()
-                topic_name = topic_row["name"] if topic_row else None
-        # mark this material as a duplicate
+            dupe_material_id = row["id"] if row else None
+            topic_row = conn.execute(
+                "SELECT name FROM topics WHERE id = ?", (topic_id,)
+            ).fetchone()
+            topic_name = topic_row["name"] if topic_row else None
+        # mark this material as a duplicate and stop (no jobs/plans attached)
         db.update_material(
             conn,
             material_id,
@@ -196,6 +235,12 @@ def process_material(
             effort_hours=effort,
             markdown_path=str(markdown_path),
         )
+        conn.commit()
+        result = dict(db.get_material(conn, material_id))
+        result["topic_name"] = topic_name
+        result["cluster_relation"] = relation
+        result["cluster_reason"] = str(clustered.get("reason", ""))
+        return result
     elif relation == "version":
         # New version of an existing material: supersede the latest member of
         # the given topic.
@@ -253,6 +298,8 @@ def process_material(
 
     result = dict(db.get_material(conn, material_id))
     result["topic_name"] = topic_name
+    result["cluster_relation"] = relation
+    result["cluster_reason"] = str(clustered.get("reason", ""))
     return result
 
 
@@ -291,7 +338,6 @@ def merge_topics(
         (target_topic_id, source_topic_id),
     )
     conn.execute("DELETE FROM topics WHERE id = ?", (source_topic_id,))
-    conn.commit()
 
     row = conn.execute(
         "SELECT * FROM topics WHERE id = ?", (target_topic_id,)

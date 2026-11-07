@@ -9,10 +9,27 @@ A **dynamic, calendar-orientated study manager** with a **lightweight LLM assist
 
 ## Status
 
-**M0 (calendar skeleton + ICS import) and M1 (inbox upload → markdown → tagging) are done.**  
-Current focus: **M2 — LLM assistant** (chat + auto-tag / de-dup / cluster of dropped files + LLM endpoint config), per `BLUEPRINT.md §9`. The LLM never schedules; deterministic Python does.
+**M0–M4 are implemented; M5 (final delivery) is complete.** The full loop works
+end-to-end: import an `.ics`, create a goal from an exam, drop materials (tagged
+and clustered, optionally via an LLM), and jobs are scheduled immediately.
+Ticking a job adds spaced revisions and reflows the plan atomically. Dragging a
+job pins it, and external calendar events override conflicting pinned slots.
+Chat is grounded in the calendar and falls back to useful offline answers. Stats
+and optional Cloudflare OCR are available, and the app ships as a multi-stage
+Docker image.
 
-M2 in place: settings panel to configure the LLM endpoint (`llm_base_url` / `llm_model` / `llm_api_key`), and file upload now clusters drops into existing topics (`new`/`duplicate`/`version`) instead of one topic per file. With no endpoint configured, chat and tagging fall back to deterministic offline behavior.
+- **M2** — settings panel for any OpenAI-compatible endpoint; auto-tag, de-dup,
+  and topic clustering (`new`/`duplicate`/`version`); grounded chat.
+- **M3** — deterministic planner, exam-derived goals, upload → ingest → replan,
+  move/pin with conflict vetoes, revision de-duplication.
+- **M4** — stats panel, optional Cloudflare OCR for scanned PDFs, Docker compose,
+  responsive week view.
+- **M5** — API contract (`docs/API.md`), delivery checklist/demo
+  (`docs/DELIVERY.md`), and one-command acceptance smoke test
+  (`python scripts/smoke_e2e.py`).
+
+The LLM never schedules; deterministic Python does. With no endpoint configured,
+every LLM skill falls back to a deterministic path.
 
 ## Document map
 
@@ -23,13 +40,14 @@ M2 in place: settings panel to configure the LLM endpoint (`llm_base_url` / `llm
 | `CONTRIBUTING.md` | Setup, tests, commit conventions, review checklist |
 | `docs/ARCHITECTURE.md` | Modules, data flows, engine algorithm, LLM skills |
 | `docs/DATA_MODEL.md` | SQLite schema + ICS mapping rules |
-| `docs/API.md` | REST endpoints (M0–M3) |
+| `docs/API.md` | REST endpoints (M0–M5) |
 | `docs/STYLE.md` | Python + web code style |
 | `docs/DECISIONS.md` | Decision log (append-only) |
 | `docs/GLOSSARY.md` | Single vocabulary for code, docs, and chat |
-| `docs/TESTING.md` | Test strategy + engine invariants E1–E9 |
+| `docs/TESTING.md` | Test strategy + engine invariants E1–E13 |
 | `docs/UX_SPEC.md` | Per-page UI spec (the contract for UI work) |
 | `docs/WALKTHROUGH.md` | One concrete end-to-end scenario using `samples/` |
+| `docs/DELIVERY.md` | M5 final-delivery acceptance checklist + demo script |
 
 ## Running
 
