@@ -29,6 +29,10 @@ also additive: the import replans **every open goal** after the events are writt
 so new/changed external events never leave jobs silently overlapping them (pinned
 jobs that an import clobbers are deleted and re-placed unpinned).
 
+`from` / `to` are **local calendar dates** (`YYYY-MM-DD`) and are inclusive: `from`
+starts at 00:00 and `to` covers the whole day. Same parameters on `GET /api/jobs`.
+ISO-8601 timestamps are also accepted (then they are exact, `to` exclusive).
+
 ## Goals
 | Method & path | Body | Returns |
 |---|---|---|
@@ -78,7 +82,7 @@ file is kept.
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /api/chat/messages` | — | `[{id, role, content, created_at}]` (oldest first) |
-| `POST /api/chat` | `{message}` | `{reply, llm: 'on'\|'off', actions?: [{tool, args, result}]}` — `'off'` = fallback path was used |
+| `POST /api/chat` | `{message}` | `{reply, llm: 'on'\|'off', actions?: [{tool, args, result}], llm_error?: {skill, message}}` — `'off'` = fallback path was used; `llm_error` is present only when an endpoint **is** configured but the call failed (the reply is then the offline answer) |
 
 Chat receives calendar context (open goals, next 14 days of jobs/external events,
 recent materials) so it can answer “what’s due this week?” even offline. The LLM
@@ -94,14 +98,25 @@ Re-plan). The LLM never moves jobs or touches external events.
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /api/settings` | — | all keys with decoded values + `updated_by`; credential keys (`llm_api_key`, `cf_api_token`) are **write-only**: value echoes `""` with `configured: true` |
-| `PUT /api/settings` | `{"daily_capacity_hours": 5, ...}` | updated rows — bounds-validated (422 on out-of-bounds) |
+| `PUT /api/settings` | `{"daily_capacity_hours": 5, ...}` | updated rows (credentials masked the same way) — validated as a whole before any write (422 on out-of-bounds or a malformed `llm_base_url`); open goals are re-planned after a change |
 
 Keys: `daily_capacity_hours` (0.5–12), `slot_minutes` (15–120),
 `min_slot_minutes` (15–120), `revision_intervals_days` (list of 1–6 ints, 1–60, normalised to ascending order),
-`default_effort_hours` (0.1–20), `llm_base_url`, `llm_model`, `llm_api_key` (write-only),
+`default_effort_hours` (0.1–20), `utc_offset_minutes` (−840…840, the user's local clock offset),
+`llm_base_url` (empty → offline, else an `http(s)://` URL), `llm_model`, `llm_api_key` (write-only),
 `ocr_provider` (`off|cloudflare`), `cf_account_id`, `cf_api_token`, `ocr_model`,
 `ocr_min_chars`. Locally-hosted endpoints need no key (a client-side placeholder is
 used); hosted endpoints authenticate with `llm_api_key`.
+
+## LLM diagnostics
+| Method & path | Body | Returns |
+|---|---|---|
+| `GET /api/llm/status` | — | `{configured, model, base_url, api_key_set, last_error: {skill, message, at} \| null}` — no secrets |
+| `POST /api/llm/test` | — | `{ok: true, model, reply, latency_ms}` or `{ok: false, kind, skill, message, latency_ms}`; **always 200** (a failure is a diagnostic answer). `kind`: `not_configured \| auth \| not_found \| connection \| timeout \| http_error \| bad_request \| rate_limit \| bad_config \| unknown` |
+
+`/api/llm/test` sends one tiny completion with `max_retries=0`, so a dead endpoint
+answers in well under a second. The Settings panel uses both endpoints for its
+"Test connection" button and its status line.
 
 ## Health
 | Route | Serves |

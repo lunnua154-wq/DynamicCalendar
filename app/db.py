@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_SETTINGS
+from .config import DEFAULT_SETTINGS, HOST_OFFSET_SETTING, host_utc_offset_minutes
 from .errors import ConflictError, NotFoundError
 
 SCHEMA = """
@@ -138,7 +138,11 @@ def _migrate_jobs_columns(conn: sqlite3.Connection) -> None:
 
 
 def _seed_default_settings(conn: sqlite3.Connection) -> None:
-    for key, value in DEFAULT_SETTINGS.items():
+    seeded = dict(DEFAULT_SETTINGS)
+    # Local clock offset: seeded once from the host, then a normal dynamic
+    # setting, so the engine stays a pure function of (db, settings, now).
+    seeded.setdefault(HOST_OFFSET_SETTING, str(host_utc_offset_minutes()))
+    for key, value in seeded.items():
         conn.execute(
             "INSERT OR IGNORE INTO settings(key, value, updated_by, updated_at)"
             " VALUES (?, ?, 'default', ?)",

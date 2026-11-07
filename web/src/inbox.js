@@ -53,19 +53,33 @@ function appendChat(role, content) {
 
 async function setBadgeFromSettings() {
   try {
-    const rows = await api("settings");
-    const values = {};
-    rows.forEach((r) => (values[r.key] = r.value));
-    const enabled = Boolean(values.llm_base_url && values.llm_model);
-    setLlmBadge(enabled);
+    const status = await api("llm/status");
+    if (status.last_error && status.configured) {
+      setLlmBadge("error", status.last_error.message);
+    } else {
+      setLlmBadge(status.configured ? "on" : "off", status.model);
+    }
   } catch {
-    setLlmBadge(false);
+    setLlmBadge("off");
   }
 }
 
-function setLlmBadge(enabled) {
-  llmBadge.textContent = enabled ? "(LLM on)" : "(LLM off)";
-  llmBadge.className = `text-[10px] px-2 py-0.5 rounded ${enabled ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"}`;
+// mode: "on" (configured), "off" (offline), "error" (configured but failing).
+function setLlmBadge(mode, detail = "") {
+  const styles = {
+    on: "bg-emerald-100 text-emerald-700",
+    off: "bg-blue-100 text-blue-700",
+    error: "bg-rose-100 text-rose-700",
+  };
+  llmBadge.textContent =
+    mode === "on" ? `(LLM on${detail ? ` · ${detail}` : ""})` : mode === "error" ? "(LLM error)" : "(LLM off)";
+  llmBadge.className = `text-[10px] px-2 py-0.5 rounded max-w-[14rem] truncate ${styles[mode] || styles.off}`;
+  llmBadge.title =
+    mode === "error"
+      ? `The configured LLM endpoint failed: ${detail}. Replies use offline answers.`
+      : mode === "on"
+      ? `LLM endpoint configured: ${detail}`
+      : "No LLM endpoint configured — deterministic offline answers.";
 }
 
 async function loadChatHistory() {
@@ -86,13 +100,35 @@ async function sendChat() {
   try {
     const res = await api("chat", { method: "POST", body: { message: text } });
     appendChat("assistant", res.reply);
-    setLlmBadge(res.llm === "on");
+    if (res.llm_error) {
+      // The reply came from the offline fallback because the configured
+      // endpoint failed — say so instead of pretending the LLM answered.
+      setLlmBadge("error", res.llm_error.message);
+      appendWarning(`LLM unavailable (${res.llm_error.skill}): ${res.llm_error.message}`);
+    } else if (res.llm === "on") {
+      setLlmBadge("on");
+    } else {
+      setLlmBadge("off");
+    }
     if (Array.isArray(res.actions) && res.actions.length > 0) {
       appendReceipts(res.actions);
     }
   } catch (err) {
     appendChat("assistant", "Failed: " + err.message);
   }
+}
+
+/** Small muted warning under the last assistant bubble (never persisted). */
+function appendWarning(text) {
+  const row = document.createElement("div");
+  row.className = "flex justify-start";
+  const note = document.createElement("div");
+  note.className =
+    "text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1 max-w-[80%]";
+  note.textContent = text;
+  row.appendChild(note);
+  chatList.appendChild(row);
+  chatList.scrollTop = chatList.scrollHeight;
 }
 
 const READ_LABELS = {

@@ -5,7 +5,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/daygrid";
 import "../tailwind.css";
-import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings } from "./common.js";
+import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings, localDateString, formatMonth } from "./common.js";
 
 const calendarEl = document.getElementById("calendar");
 const monthEl = document.getElementById("calendar-month");
@@ -30,10 +30,11 @@ const statsPanel = document.getElementById("stats-panel");
 const statsList = document.getElementById("stats-list");
 
 function monthRange(date) {
+  // Local calendar days: toISOString() would shift by the UTC offset and drop
+  // the first/last day of the visible month.
   const start = new Date(date.getFullYear(), date.getMonth(), 1);
   const end = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-  const iso = (d) => d.toISOString().slice(0, 10);
-  return { from: iso(start), to: iso(end) };
+  return { from: localDateString(start), to: localDateString(end) };
 }
 
 function eventKindClass(kind) {
@@ -118,8 +119,10 @@ async function loadEvents() {
         },
       });
     });
-    setText(monthEl, view.currentStart.toLocaleDateString(undefined, { month: "long", year: "numeric" }));
-    emptyState.classList.toggle("hidden", events.length === 0);
+    setText(monthEl, formatMonth(view.currentStart));
+    // Hide the empty-state overlay when there is anything to show (the old
+    // condition inverted this and covered a populated calendar).
+    emptyState.classList.toggle("hidden", events.length > 0);
     renderStats();
   } catch (err) {
     toast("Failed to load calendar: " + err.message, "error");
@@ -134,7 +137,7 @@ async function renderStats() {
     const raw = await api("stats");
     const payload = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     const goals = Array.isArray(payload.goals) ? payload.goals : [];
-    const open = goals.filter((g) => g.status !== "closed" && g.status !== "done" && g.status !== "completed");
+    const open = goals.filter((g) => g.status === "open");
     statsPanel.classList.toggle("hidden", open.length === 0);
     statsList.innerHTML = "";
     const totals = payload.totals || {};
@@ -191,9 +194,9 @@ async function tickJob(jobId) {
   loadEvents();
 }
 
-function openDay(date, event) {
+function openDay(date) {
   dayPanel.classList.toggle("hidden", false);
-  setText(dayPanelDate, utcDay(date) + " · " + date.toLocaleDateString(undefined, { weekday: "long" }));
+  setText(dayPanelDate, utcDay(date));
   dayPanelList.innerHTML = "";
   // gather events for that day
   const startOfDay = new Date(date);
@@ -342,15 +345,11 @@ calendar = new Calendar(calendarEl, {
   initialDate: new Date(),
   events: [],
   eventContent: renderEvent,
-  eventClick: (info) => {
-    const job = info.event.extendedProps.job;
-    if (job && job.status !== "done") {
-      // let the checkbox handle ticks; clicking elsewhere opens the day panel
-      openDay(info.event.start, info.event);
-    } else {
-      openDay(info.event.start, info.event);
-    }
-  },
+  // Clicking anywhere in a day cell opens the day panel (docs/UX_SPEC.md P1).
+  // Without this only clicking an event chip worked, so empty days — and days
+  // whose events were collapsed behind "+n more" — could not be opened at all.
+  dateClick: (info) => openDay(info.date),
+  eventClick: (info) => openDay(info.event.start || new Date()),
   datesSet: loadEvents,
 });
 calendar.render();

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from .errors import ValidationError
 
@@ -20,6 +22,9 @@ SLOT_MINUTES_MIN = 15
 SLOT_MINUTES_MAX = 120
 EFFORT_HOURS_MIN = 0.1
 EFFORT_HOURS_MAX = 20.0
+UTC_OFFSET_MIN = -840
+UTC_OFFSET_MAX = 840
+LLM_MODEL_MAX_CHARS = 200
 
 DEFAULT_SETTINGS: dict[str, str] = {
     "daily_capacity_hours": "4.0",
@@ -37,6 +42,10 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "ocr_model": "@cf/unum/uform-gen2-qwen-500m",
     "ocr_min_chars": "40",
 }
+
+#: Seeded from the host clock on first run (see ``db.init_db``), then a normal
+#: dynamic setting: local study windows without making the engine clock-aware.
+HOST_OFFSET_SETTING = "utc_offset_minutes"
 
 STUDY_WINDOW_START_HOUR = 8
 STUDY_WINDOW_END_HOUR = 22
@@ -58,6 +67,8 @@ class Settings:
     cf_api_token: str = ""
     ocr_model: str = "@cf/unum/uform-gen2-qwen-500m"
     ocr_min_chars: int = 40
+    # Local clock offset used to lay out study windows (storage stays UTC).
+    utc_offset_minutes: int = 0
 
     @property
     def llm_enabled(self) -> bool:
@@ -95,6 +106,48 @@ def validate_effort_hours(value: float) -> float:
             f"effort_hours must be between {EFFORT_HOURS_MIN} and {EFFORT_HOURS_MAX}"
         )
     return value
+
+
+def validate_utc_offset_minutes(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValidationError("utc_offset_minutes must be a whole number of minutes")
+    if not (UTC_OFFSET_MIN <= value <= UTC_OFFSET_MAX):
+        raise ValidationError(
+            f"utc_offset_minutes must be between {UTC_OFFSET_MIN} and {UTC_OFFSET_MAX}"
+        )
+    return value
+
+
+def validate_llm_base_url(value: str) -> str:
+    """Empty means "offline mode"; otherwise it must be an http(s) URL.
+
+    A malformed URL would silently disable the LLM (the client construction is
+    wrapped in a fallback), which is exactly the failure users cannot diagnose.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlsplit(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValidationError(
+            "llm_base_url must be an http(s) URL such as http://localhost:11434/v1"
+        )
+    return text
+
+
+def validate_llm_model(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) > LLM_MODEL_MAX_CHARS:
+        raise ValidationError(f"llm_model must be at most {LLM_MODEL_MAX_CHARS} characters")
+    if any(ord(ch) < 32 for ch in text):
+        raise ValidationError("llm_model must not contain control characters")
+    return text
+
+
+def host_utc_offset_minutes() -> int:
+    """Offset of the host clock from UTC, in minutes (e.g. +480 for UTC+8)."""
+    offset = datetime.now(timezone.utc).astimezone().utcoffset()
+    return int((offset.total_seconds() if offset else 0) // 60)
 
 
 def _decode_setting(value: str) -> str:
@@ -140,5 +193,8 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
         ocr_model=_decode_setting(values.get("ocr_model", DEFAULT_SETTINGS["ocr_model"])),
         ocr_min_chars=int(
             values.get("ocr_min_chars", DEFAULT_SETTINGS["ocr_min_chars"])
+        ),
+        utc_offset_minutes=(
+            int(_decode_setting(values.get("utc_offset_minutes", "")) or 0)
         ),
     )

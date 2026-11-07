@@ -93,11 +93,17 @@ chat_messages
 | `llm_model` | `""` | — |
 | `llm_api_key` | `""` | — |
 | `default_effort_hours` | `1.0` | 0.1 – 20 |
+| `utc_offset_minutes` | host offset at first run (e.g. `480`) | −840 – 840 |
 | `ocr_provider` | `"off"` | `off` \| `cloudflare` |
 | `cf_account_id` | `""` | — |
 | `cf_api_token` | `""` | — |
 | `ocr_model` | `"@cf/unum/uform-gen2-qwen-500m"` | — |
 | `ocr_min_chars` | `40` | 1 – 10000 |
+
+`utc_offset_minutes` is the user's local clock offset. It is seeded once from the host
+on first run, then a normal dynamic setting. The engine lays out each day's study
+window (08:00–22:00 **local**) with it and writes UTC back, so every stored timestamp
+stays UTC while study jobs land in waking hours.
 
 ## ICS mapping (import — the only write path to external events)
 

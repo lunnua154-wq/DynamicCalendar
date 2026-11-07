@@ -170,18 +170,43 @@ export async function api(path, options = {}) {
   return data;
 }
 
+// The UI language is English (docs/DECISIONS.md); never the browser locale, or
+// the same calendar renders "18:50" for one user and "下午06:50" for another.
+const LOCALE = "en-GB";
+const TIME_FORMAT = new Intl.DateTimeFormat(LOCALE, {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 export function utcTime(iso) {
   if (!iso) return "";
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : TIME_FORMAT.format(date);
 }
 
 export function utcDay(iso) {
   if (!iso) return "";
-  return new Date(iso).toLocaleDateString(undefined, {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(LOCALE, {
     weekday: "short",
     month: "short",
     day: "numeric",
   });
+}
+
+/** Local-time ``YYYY-MM-DD``. ``toISOString()`` shifts by the UTC offset and
+ *  silently drops the first/last day of every range — never use it for dates. */
+export function localDateString(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export function formatMonth(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toLocaleDateString(LOCALE, { month: "long", year: "numeric" });
 }
 
 export function escapeHtml(unsafe) {
@@ -235,6 +260,8 @@ export function initSettings(btnEl) {
     document.body.appendChild(modal);
   }
   const card = modal.children[0];
+  // Write-only credentials: blank means "keep the stored value".
+  const SENSITIVE_KEYS = new Set(["llm_api_key", "cf_api_token"]);
   const fields = [
     { key: "llm_base_url", label: "LLM base URL", type: "url", placeholder: "http://localhost:11434/v1" },
     { key: "llm_model", label: "Model", type: "text", placeholder: "e.g. gpt-4o-mini" },
@@ -288,16 +315,43 @@ export function initSettings(btnEl) {
         }
       });
       setStatus(values);
+      await showLlmError();
     } catch (err) {
       toast("Failed to load settings: " + err.message, "error");
+    }
+  }
+
+  /** Surface the server's last LLM failure, if any, next to the status line. */
+  async function showLlmError() {
+    const result = document.getElementById("st-llm-result");
+    if (!result) return;
+    try {
+      const status = await api("llm/status");
+      const err = status && status.last_error;
+      if (err) {
+        result.className = "text-[11px] mb-3 text-rose-700 whitespace-pre-line";
+        result.textContent = `Last LLM error (${err.skill}): ${err.message}`;
+      } else {
+        result.textContent = "";
+      }
+    } catch {
+      /* diagnostics are best-effort */
     }
   }
 
   function setStatus(values) {
     const enabled = Boolean(values.llm_base_url && values.llm_model);
     const status = document.getElementById("st-status");
-    status.textContent = `LLM: ${enabled ? "on" : "off"} ${enabled ? "" : "(offline mode)"}`;
-    status.className = `text-xs mb-4 ${enabled ? "text-emerald-700" : "text-slate-500"}`;
+    if (enabled) {
+      status.textContent = `LLM: on — ${values.llm_model} @ ${values.llm_base_url}`;
+      status.className = "text-xs mb-2 text-emerald-700 whitespace-pre-line break-all";
+    } else if (values.llm_base_url || values.llm_model) {
+      status.textContent = "LLM: off — both a base URL and a model are required (offline mode)";
+      status.className = "text-xs mb-2 text-amber-700 whitespace-pre-line";
+    } else {
+      status.textContent = "LLM: off — offline mode (deterministic fallbacks)";
+      status.className = "text-xs mb-2 text-slate-500 whitespace-pre-line";
+    }
   }
 
   function openModal() {
@@ -317,13 +371,17 @@ export function initSettings(btnEl) {
     fields.forEach((spec) => {
       const el = document.getElementById(`st-${spec.key}`);
       if (!el) return;
-      let value = el.value;
+      const value = el.value;
       if (spec.type === "number") {
-        if (value === "") return;
-        value = Number(value);
+        if (value === "") return; // blank number = unchanged
+        payload[spec.key] = Number(value);
+        return;
       }
-      if (value === "" || value === null || value === undefined) return;
-      payload[spec.key] = value;
+      // Credentials are write-only: a blank field means "keep the stored key",
+      // it must never wipe it. Every other text field is sent even when blank,
+      // so the endpoint can be cleared back to offline mode.
+      if (SENSITIVE_KEYS.has(spec.key) && value.trim() === "") return;
+      payload[spec.key] = typeof value === "string" ? value.trim() : value;
     });
     if (Object.keys(payload).length === 0) {
       closeModal();
@@ -342,16 +400,10 @@ export function initSettings(btnEl) {
     try {
       await api("settings", { method: "PUT", body: payload });
       toast("Settings saved", "success");
-      const all = {};
-      fields.forEach((spec) => {
-        const el = document.getElementById(`st-${spec.key}`);
-        all[spec.key] = el ? el.value : "";
-      });
-      setStatus(all);
+      await load(); // re-read what the server actually stored
       closeModal();
     } catch (err) {
-      // No half-saving: the PUT either succeeded (toast above) or failed and
-      // nothing was persisted. Surface the server's validation message.
+      // No half-saving: the PUT either succeeded or failed atomically.
       toast("Failed to save: " + err.message, "error");
     } finally {
       loading = false;
@@ -401,12 +453,45 @@ export function initSettings(btnEl) {
   });
   const status = document.createElement("p");
   status.id = "st-status";
-  status.className = "text-xs mb-4 text-slate-500";
+  status.className = "text-xs mb-2 text-slate-500";
   status.textContent = "Loading…";
+  const llmResult = document.createElement("p");
+  llmResult.id = "st-llm-result";
+  llmResult.className = "text-[11px] mb-3";
   card.appendChild(form);
   card.appendChild(status);
+  card.appendChild(llmResult);
   const btns = document.createElement("div");
-  btns.className = "flex justify-end gap-2 pt-3 border-t border-slate-100";
+  btns.className = "flex items-center justify-end gap-2 pt-3 border-t border-slate-100";
+  const test = document.createElement("button");
+  test.id = "st-llm-test";
+  test.type = "button";
+  test.className =
+    "mr-auto px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 hover:bg-slate-50";
+  test.textContent = "Test connection";
+  test.onclick = async () => {
+    const previous = test.textContent;
+    test.disabled = true;
+    test.textContent = "Testing…";
+    llmResult.className = "text-[11px] mb-3 text-slate-500";
+    llmResult.textContent = "";
+    try {
+      const result = await api("llm/test", { method: "POST" });
+      if (result.ok) {
+        llmResult.className = "text-[11px] mb-3 text-emerald-700";
+        llmResult.textContent = `OK — ${result.model} replied in ${result.latency_ms} ms`;
+      } else {
+        llmResult.className = "text-[11px] mb-3 text-rose-700 whitespace-pre-line";
+        llmResult.textContent = `Failed (${result.kind || "error"}): ${result.error || "no response"}`;
+      }
+    } catch (err) {
+      llmResult.className = "text-[11px] mb-3 text-rose-700";
+      llmResult.textContent = "Test failed: " + err.message;
+    } finally {
+      test.disabled = false;
+      test.textContent = previous;
+    }
+  };
   const cancel = document.createElement("button");
   cancel.id = "st-cancel";
   cancel.className = "px-3 py-1.5 rounded border border-slate-300 text-sm hover:bg-slate-50";
@@ -415,6 +500,7 @@ export function initSettings(btnEl) {
   save.id = "st-save";
   save.className = "px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700";
   save.textContent = "Save";
+  btns.appendChild(test);
   btns.appendChild(cancel);
   btns.appendChild(save);
   card.appendChild(btns);
