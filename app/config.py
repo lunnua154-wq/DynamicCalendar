@@ -76,6 +76,17 @@ def validate_effort_hours(value: float) -> float:
     return value
 
 
+def _decode_setting(value: str) -> str:
+    """Settings are persisted via ``json.dumps``, so a string setting like the
+    LLM base URL is stored with surrounding quotes. Decode it back to a plain
+    string so the LLM client receives a usable URL / key."""
+    try:
+        decoded = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+    return decoded if isinstance(decoded, str) else value
+
+
 def parse_settings(rows: list[dict[str, Any]]) -> Settings:
     values = {row["key"]: row["value"] for row in rows}
     return Settings(
@@ -94,9 +105,9 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
                 DEFAULT_SETTINGS["revision_intervals_days"],
             )
         ),
-        llm_base_url=values.get("llm_base_url", ""),
-        llm_model=values.get("llm_model", ""),
-        llm_api_key=values.get("llm_api_key", ""),
+        llm_base_url=_decode_setting(values.get("llm_base_url", "")),
+        llm_model=_decode_setting(values.get("llm_model", "")),
+        llm_api_key=_decode_setting(values.get("llm_api_key", "")),
         default_effort_hours=float(
             values.get("default_effort_hours", DEFAULT_SETTINGS["default_effort_hours"])
         ),

@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, engine, ics_sync, llm as llm_mod
-from .config import DEFAULT_SETTINGS, parse_settings
+from .config import DEFAULT_SETTINGS, parse_settings, _decode_setting
 from .errors import DynaCalendarError
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -459,7 +459,7 @@ def chat(payload: dict[str, Any]):
 def get_settings():
     conn = _get_conn()
     try:
-        return db.list_settings(conn)
+        return [{**r, "value": _decode_setting(r["value"])} for r in db.list_settings(conn)]
     finally:
         conn.close()
 
