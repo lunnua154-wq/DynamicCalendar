@@ -2,10 +2,12 @@
 and unconfigured client -> offline fallback (no network)."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from app import db
 from app.config import Settings
 from app.llm import LLMClient, extract_json
 
@@ -318,3 +320,168 @@ def test_extract_json_braces_inside_string_literals():
 def test_extract_json_non_object_raises():
     with pytest.raises(ValueError):
         extract_json("[1, 2, 3]")
+
+
+# --------------------------------------------------------------------------- chat tools (bounded loop)
+
+
+def _tool_message(content="", tool_calls=None):
+    return SimpleNamespace(content=content, tool_calls=tool_calls)
+
+
+def _response(content="", tool_calls=None):
+    """Wrap a message like the OpenAI SDK does: response.choices[0].message."""
+    msg = _tool_message(content=content, tool_calls=tool_calls)
+    return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+
+def _tool_call(name, arguments, call_id="tc-1"):
+    fn = SimpleNamespace(name=name, arguments=arguments)
+    return SimpleNamespace(id=call_id, type="function", function=fn)
+
+
+def _scripted(*responses):
+    fake = MagicMock()
+    fake.chat.completions.create.side_effect = list(responses)
+    return fake
+
+
+def _seed_chat_db(conn):
+    gid = db.create_goal(conn, title="Limits", deadline="2026-12-18T00:00:00Z")
+    mid = db.create_material(
+        conn,
+        goal_id=gid,
+        topic_id=None,
+        filename="limits.md",
+        original_path="/x/limits.md",
+        markdown_path="/x/limits.md",
+        content_hash="hash-limits",
+        summary="Limits chapter summary.",
+        tags="[]",
+        effort_hours=1.0,
+        status="ready",
+    )
+    eid = db.create_event(
+        conn,
+        kind="study",
+        title="Limits session",
+        dtstart="2026-11-09T14:00:00Z",
+        dtend="2026-11-09T14:50:00Z",
+        locked=0,
+    )
+    db.create_job(
+        conn,
+        event_id=eid,
+        goal_id=gid,
+        material_id=mid,
+        kind="learn",
+        duration_min=50,
+        status="pending",
+    )
+    conn.commit()
+    return gid, mid
+
+
+def test_chat_tool_update_settings(conn):
+    fake = _scripted(
+        _response(
+            tool_calls=[_tool_call("update_settings", '{"daily_capacity_hours": 6}')]
+        ),
+        _response("Done — capacity is now 6h."),
+    )
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.chat(
+        message="set my daily capacity to 6 hours",
+        history=[],
+        context={},
+        conn=conn,
+        now_iso="2026-11-07T12:00:00Z",
+    )
+    assert out["llm"] == "on"
+    assert out["reply"] == "Done — capacity is now 6h."
+    assert out["actions"][0]["tool"] == "update_settings"
+    assert out["actions"][0]["args"] == {"daily_capacity_hours": 6}
+    row = conn.execute(
+        "SELECT value, updated_by FROM settings WHERE key = 'daily_capacity_hours'"
+    ).fetchone()
+    assert row["updated_by"] == "llm"
+    assert json.loads(row["value"]) == 6.0
+
+
+def test_chat_tool_list_jobs(conn):
+    _seed_chat_db(conn)
+    fake = _scripted(
+        _response(tool_calls=[_tool_call("list_jobs", "{}")]),
+        _response(
+            "You have one job coming up: Limits chapter on Mon 09 Nov 14:00."
+        ),
+    )
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.chat(
+        message="what's on my schedule?",
+        history=[],
+        context={},
+        conn=conn,
+        now_iso="2026-11-07T12:00:00Z",
+    )
+    assert out["llm"] == "on"
+    assert "Limits chapter" in out["reply"]
+    assert "14:00" in out["reply"]
+    assert out["actions"][0]["tool"] == "list_jobs"
+    assert len(out["actions"][0]["result"]["jobs"]) == 1
+
+
+def test_chat_tool_bad_args_recover(conn):
+    _seed_chat_db(conn)
+    fake = _scripted(
+        _response(
+            tool_calls=[_tool_call("update_settings", '{"daily_capacity_hours": 99}')]
+        ),
+        _response("Capacity must stay between 0.5 and 12 hours."),
+    )
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.chat(
+        message="set capacity to 99 hours",
+        history=[],
+        context={},
+        conn=conn,
+        now_iso="2026-11-07T12:00:00Z",
+    )
+    assert out["llm"] == "on"
+    assert out["reply"] == "Capacity must stay between 0.5 and 12 hours."
+    assert len(out["actions"]) == 1
+    assert out["actions"][0]["tool"] == "update_settings"
+    assert "error" in out["actions"][0]["result"]
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = 'daily_capacity_hours'"
+    ).fetchone()
+    assert json.loads(row["value"]) == 4.0  # unchanged
+
+
+def test_chat_tool_loop_cap(conn):
+    fake = _scripted(
+        _response(tool_calls=[_tool_call("list_goals", "{}")]) for _ in range(5)
+    )
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    out = c.chat(
+        message="hi",
+        history=[],
+        context={},
+        conn=conn,
+        now_iso="2026-11-07T12:00:00Z",
+    )
+    assert out["llm"] == "off"
+    assert len(out["reply"]) > 0
+    assert "actions" not in out
+
+
+def test_chat_tools_offline_untouched():
+    c = LLMClient(_settings(llm_enabled=False))
+    assert c.client is None  # OpenAI client never built
+    out = c.chat(message="what's due?", history=[], context={})
+    assert out["llm"] == "off"
+    assert "actions" not in out
