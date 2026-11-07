@@ -5,7 +5,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/daygrid";
 import "../tailwind.css";
-import { api, toast, dialog, utcTime, utcDay, setText } from "./common.js";
+import { api, toast, dialog, utcTime, utcDay, setText, initSettings } from "./common.js";
 
 const calendarEl = document.getElementById("calendar");
 const monthEl = document.getElementById("calendar-month");
@@ -16,6 +16,7 @@ const btnClose = document.getElementById("btn-day-close");
 const btnImport = document.getElementById("btn-import");
 const btnReplan = document.getElementById("btn-replan");
 const btnToday = document.getElementById("btn-today");
+const btnSettings = document.getElementById("btn-settings");
 const fileIcs = document.getElementById("file-ics");
 const examBanner = document.getElementById("exam-banner");
 const examBannerText = document.getElementById("exam-banner-text");
@@ -280,3 +281,4 @@ calendar = new Calendar(calendarEl, {
 });
 calendar.render();
 loadEvents();
+initSettings(btnSettings);

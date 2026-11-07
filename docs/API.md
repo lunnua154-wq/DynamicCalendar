@@ -34,7 +34,7 @@ All dates in queries: `YYYY-MM-DD` (local day, server converts with user zone).
 ## Inbox
 | Method & path | Body | Returns |
 |---|---|---|
-| `POST /api/inbox/upload` | multipart `files[]` | `[{filename, status: 'processing'\|'ready'\|'error', material_id?}]` (ingestion runs synchronously within the request; 'processing' materials are finalized before the response) |
+| `POST /api/inbox/upload` | multipart `files` (+ optional `goal_id`) | `[{filename, status: 'ready'\|'duplicate'\|'error', material_id, topic_id, summary, tags, effort_hours, duplicate_of?, cluster_relation, cluster_reason?}]` |
 | `GET /api/inbox/files` | — | `[{id, filename, summary, tags, effort_hours, status, duplicate_of?}]` |
 | `POST /api/inbox/files/{id}/dismiss` | `{action: 'duplicate'\|'superseded'}` | material row — user override of the tag/cluster call |
 | `POST /api/inbox/files/{id}/effort` | `{hours}` | material row — user override of estimate |

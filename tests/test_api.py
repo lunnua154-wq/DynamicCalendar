@@ -71,6 +71,60 @@ def test_upload_without_files_422():
     assert r.status_code == 422, r.text
 
 
+def test_chat_accepts_json_body():
+    c = _client()
+    r = c.post("/api/chat", json={"message": "what's due this week?"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "reply" in body
+    assert body["llm"] in ("on", "off")
+
+
+def test_chat_missing_message_422():
+    c = _client()
+    r = c.post("/api/chat", json={})
+    assert r.status_code == 422, r.text
+    r = c.post("/api/chat", json={"message": "   "})
+    assert r.status_code == 422, r.text
+
+
+def test_upload_returns_ready_offline():
+    c = _client()
+    r = c.post(
+        "/api/inbox/upload",
+        files={"files": ("notes.md", b"# Notes\n\nSome study notes.", "text/markdown")},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["status"] == "ready"
+    assert body[0]["material_id"]
+    assert body[0]["filename"] == "notes.md"
+    assert "cluster_relation" in body[0]
+
+
+def test_upload_duplicate_content():
+    c = _client()
+    data = b"# Duplicate target\n\nUnique content for dedup test."
+    r1 = c.post(
+        "/api/inbox/upload",
+        files={"files": ("notes.md", data, "text/markdown")},
+    )
+    assert r1.status_code == 200, r1.text
+    first = r1.json()[0]
+    assert first["status"] == "ready"
+
+    r2 = c.post(
+        "/api/inbox/upload",
+        files={"files": ("notes_copy.md", data, "text/markdown")},
+    )
+    assert r2.status_code == 200, r2.text
+    second = r2.json()[0]
+    assert second["status"] == "duplicate"
+    assert second["material_id"] == first["material_id"]
+    assert "identical content" in second["reason"]
+
+
 def test_ics_import_roundtrip():
     c = _client()
     with open("samples/sample_calendar.ics", "rb") as fh:
