@@ -815,34 +815,22 @@ async def chat(request: Request):
         client = llm_mod.LLMClient(settings)
         history = db.list_chat_messages(conn)
         context = _build_chat_context(conn, _now_utc())
-        result = client.chat(
-            message=message,
-            history=[dict(h) for h in history],
-            context=context,
-        )
-        reply = result["reply"]
-        llm = result.get("llm", "off")
-
-        settings_changed = None
-        msg_lower = message.lower()
-        is_settings_request = any(
-            k in msg_lower
-            for k in ("capacity", "slot", "hours", "minutes", "settings", "tune")
-        )
-        if is_settings_request:
-            tuned = client.tune_settings(context=json.dumps(context))
-            if tuned:
-                settings_changed = tuned
-
-        with conn:  # single transaction: persist messages + any settings change
+        now_iso = _now_utc()
+        with conn:  # single transaction: tool actions (settings/effort) + messages
+            result = client.chat(
+                message=message,
+                history=[dict(h) for h in history],
+                context=context,
+                conn=conn,
+                now_iso=now_iso,
+            )
+            reply = result["reply"]
+            llm = result.get("llm", "off")
             db.add_chat_message(conn, role="user", content=message)
             db.add_chat_message(conn, role="assistant", content=reply)
-            if settings_changed:
-                for k, v in settings_changed.items():
-                    db.update_setting(conn, k, json.dumps(v), "llm")
         out = {"reply": reply, "llm": llm}
-        if settings_changed is not None:
-            out["settings_changed"] = settings_changed
+        if result.get("actions"):
+            out["actions"] = result["actions"]
         return out
     finally:
         conn.close()

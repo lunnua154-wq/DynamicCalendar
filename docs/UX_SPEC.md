@@ -140,6 +140,11 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
     then are the offline fallbacks (still useful: reads the calendar, reports schedules).
   - Chat answers about the calendar ("what's due this week?") are rendered with the
     same event chips as the day panel.
+  - Assistant replies may be followed by a compact action receipt row (⚙ lines, error
+    lines in rose) listing each tool the chat ran (e.g. `⚙ read goals`,
+    `settings → daily_capacity_hours 6, slot_minutes 50`, `⚙ effort → limits.pdf → 5h`).
+    Receipts appear for live replies only — they are not persisted and do not show
+    when history is reloaded.
 - **Right — inbox**:
   - Drop zone: drag & drop or click-to-browse, multiple files at once.
   - Each file row: name, **status chip** (`processing` spinner / `ready` / `duplicate` /
@@ -151,6 +156,8 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
     (stop when all settle).
 - **Goal selector** (top-right): materials dropped while a goal is selected attach to it;
   `Unattached` is a valid state — shown as a chip on the row.
+  - Beside it, a title + deadline input and `New goal` button create a goal via
+    `POST /api/goals` (deadline required) and select it in the selector.
 - **Topics strip** (bottom): each topic = name + file count + actions `[merge ▾]` `[rename]`;
   merging = pick target topic, members re-attach, re-plan triggered.
 - **Errors**: unsupported file type → row `error` + `unsupported format (xxx)` — the row

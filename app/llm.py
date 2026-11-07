@@ -19,6 +19,13 @@ from typing import Any
 from openai import OpenAI
 
 from .config import Settings, validate_capacity_hours, validate_effort_hours, validate_slot_minutes
+try:
+    from .tools import dispatch, tool_specs
+    _TOOLS_OK = True
+except Exception:  # pragma: no cover - tools module always present
+    _TOOLS_OK = False
+    dispatch = None  # type: ignore[assignment]
+    tool_specs = None  # type: ignore[assignment]
 
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*", re.IGNORECASE)
@@ -59,6 +66,18 @@ def _fmt_slot(iso: str) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).strftime("%a %d %b %H:%M")
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _strip_fences(text: str) -> str:
+    """Remove markdown fences (``` / ```json) wrapping a JSON payload."""
+    text = _JSON_FENCE.sub("", text or "").strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    return text
 
 
 class LLMClient:
@@ -208,10 +227,24 @@ class LLMClient:
     # ---------------------------------------------------------------- chat
 
     def chat(
-        self, *, message: str, history: list[dict[str, str]], context: dict[str, Any] | None = None
+        self,
+        *,
+        message: str,
+        history: list[dict[str, str]],
+        context: dict[str, Any] | None = None,
+        conn: Any = None,
+        now_iso: str | None = None,
     ) -> dict[str, Any]:
         if self.client is not None:
             try:
+                if conn is not None and _TOOLS_OK:
+                    return self._chat_llm_tools(
+                        message=message,
+                        history=history,
+                        context=context,
+                        conn=conn,
+                        now_iso=now_iso or _now_utc(),
+                    )
                 return self._chat_llm(message=message, history=history, context=context)
             except Exception:  # pragma: no cover - network/LLM failure
                 pass
@@ -231,6 +264,78 @@ class LLMClient:
             temperature=0.3,
         )
         return {"reply": resp.choices[0].message.content or "", "llm": "on"}
+
+    def _chat_llm_tools(
+        self,
+        *,
+        message: str,
+        history: list[dict[str, str]],
+        context: dict[str, Any] | None,
+        conn: Any,
+        now_iso: str,
+    ) -> dict[str, Any]:
+        """Bounded agent loop (max 5 rounds) over the narrow tool registry.
+
+        Tool results are appended as tool messages; every outcome is recorded
+        in the returned ``actions`` receipts. Any exception degrades to the
+        offline fallback (never propagates).
+        """
+        system = (
+            "You are a study calendar assistant. Use the narrow tools to read "
+            "calendar data or apply bounded settings/effort changes; never "
+            "invent job moves or external-event changes."
+        )
+        if context:
+            system += "\nCalendar context: " + json.dumps(context)[:2000]
+        tools = tool_specs()
+        messages: list[dict[str, Any]] = (
+            [{"role": "system", "content": system}]
+            + [dict(h) for h in history]
+            + [{"role": "user", "content": message}]
+        )
+        actions: list[dict[str, Any]] = []
+        for _ in range(5):
+            resp = self.client.chat.completions.create(  # type: ignore[union-attr]
+                model=self.settings.llm_model,
+                messages=messages,
+                tools=tools,
+                temperature=0,
+            )
+            resp_msg = resp.choices[0].message
+            tool_calls = getattr(resp_msg, "tool_calls", None) or []
+            if not tool_calls:
+                out: dict[str, Any] = {
+                    "reply": getattr(resp_msg, "content", None) or "",
+                    "llm": "on",
+                }
+                if actions:
+                    out["actions"] = actions
+                return out
+            for tc in tool_calls:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", "") or ""
+                raw_args = getattr(fn, "arguments", "{}") or "{}"
+                try:
+                    args = json.loads(_strip_fences(raw_args))
+                except Exception as exc:
+                    args = raw_args
+                    result = {"error": f"invalid tool arguments: {exc}"}
+                else:
+                    result = dispatch(conn, name, args, now_iso)
+                actions.append({"tool": name, "args": args, "result": result})
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": getattr(tc, "id", ""),
+                        "content": json.dumps(result, default=str),
+                    }
+                )
+        # Cap reached without a final answer: degrade gracefully, but keep
+        # the receipts — earlier rounds may already have changed settings.
+        out = self._chat_fallback(message=message, context=context)
+        if actions:
+            out["actions"] = actions
+        return out
 
     def _chat_fallback(self, *, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Genuinely useful offline reply: calendar-grounded, never just

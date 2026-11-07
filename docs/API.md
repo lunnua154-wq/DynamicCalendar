@@ -78,13 +78,17 @@ file is kept.
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /api/chat/messages` | — | `[{id, role, content, created_at}]` (oldest first) |
-| `POST /api/chat` | `{message}` | `{reply, llm: 'on'\|'off', settings_changed?: {...}}` — `'off'` = fallback path was used |
+| `POST /api/chat` | `{message}` | `{reply, llm: 'on'\|'off', actions?: [{tool, args, result}]}` — `'off'` = fallback path was used |
 
 Chat receives calendar context (open goals, next 14 days of jobs/external events,
-recent materials) so it can answer “what’s due this week?” even offline. When the
-message asks to tune settings (e.g. contains “capacity”, “slot”, “hours”,
-“minutes”, “settings”), the server may apply bounds-validated `tune_settings`
-values with `updated_by='llm'` and return them in `settings_changed`.
+recent materials) so it can answer “what’s due this week?” even offline. The LLM
+may invoke narrow tools: read-only (list_goals, list_jobs, list_events,
+list_materials, get_stats) and two bounded writes (update_settings,
+set_material_effort). Every tool result is returned to the client in the additive
+`actions` array as `{tool, args, result}` receipts. Settings changes made by chat
+are bounds-validated and stored with `updated_by='llm'` and visible in the
+receipt; the engine still owns placement and re-plan is explicit (user presses
+Re-plan). The LLM never moves jobs or touches external events.
 
 ## Settings
 | Method & path | Body | Returns |
