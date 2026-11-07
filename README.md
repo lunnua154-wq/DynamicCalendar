@@ -12,6 +12,8 @@ A **dynamic, calendar-orientated study manager** with a **lightweight LLM assist
 **M0 (calendar skeleton + ICS import) and M1 (inbox upload → markdown → tagging) are done.**  
 Current focus: **M2 — LLM assistant** (chat + auto-tag / de-dup / cluster of dropped files + LLM endpoint config), per `BLUEPRINT.md §9`. The LLM never schedules; deterministic Python does.
 
+M2 in place: settings panel to configure the LLM endpoint (`llm_base_url` / `llm_model` / `llm_api_key`), and file upload now clusters drops into existing topics (`new`/`duplicate`/`version`) instead of one topic per file. With no endpoint configured, chat and tagging fall back to deterministic offline behavior.
+
 ## Document map
 
 | File | Purpose |
