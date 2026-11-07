@@ -322,7 +322,7 @@ def test_extract_json_non_object_raises():
         extract_json("[1, 2, 3]")
 
 
-# --------------------------------------------------------------------------- chat tools (bounded loop)
+# --------------------------------------------------------------------------- chat tools
 
 
 def _tool_message(content="", tool_calls=None):
