@@ -265,6 +265,12 @@ async def inbox_upload(
         materials_dir = Path(DEFAULT_DB_PATH).parent / "materials"
         materials_dir.mkdir(parents=True, exist_ok=True)
 
+        # M2 cluster state: existing topics + hashes already known to the DB,
+        # carried through the batch so later files can cluster against earlier
+        # ones in the same upload.
+        existing_topics = db.list_topics(conn)
+        seen_hashes = {m["content_hash"] for m in db.list_materials(conn)}
+
         results = []
         for upload in files:
             filename = upload.filename or "untitled"
@@ -302,15 +308,47 @@ async def inbox_upload(
             tagged = client.tag(markdown=markdown_text, filename=filename)
             tags_json = json.dumps(tagged["tags"])
 
-            # topic: each file its own topic in offline mode (cluster fallback)
-            topic_id = db.create_topic(
-                conn,
-                name=tagged["tags"][0] if tagged["tags"] else filename,
-                goal_id=goal_id,
+            # cluster: group into an existing topic, or start a new one (M2)
+            cluster_result = client.cluster(
+                content_hash=content_hash,
+                filename=filename,
+                existing_topics=existing_topics,
+                existing_material_hashes=list(seen_hashes),
             )
+            relation = str(cluster_result.get("relation", "new"))
+            topic_id = cluster_result.get("topic_id")
+
+            def members_of(tid: str) -> list[dict[str, Any]]:
+                return [m for m in db.list_materials(conn) if m["topic_id"] == tid]
+
+            if topic_id is None:
+                # start a fresh topic for this file
+                topic_id = db.create_topic(
+                    conn,
+                    name=tagged["tags"][0] if tagged["tags"] else filename,
+                    goal_id=goal_id,
+                )
+                existing_topics.append(
+                    {"id": topic_id, "name": tagged["tags"][0] if tagged["tags"] else filename}
+                )
+
+            status = "ready"
+            duplicate_of: str | None = None
+            if relation == "duplicate":
+                status = "duplicate"
+                members = members_of(topic_id)
+                if members:
+                    duplicate_of = members[0]["id"]
+            elif relation == "version":
+                members = members_of(topic_id)
+                if members:
+                    latest = members[0]
+                    db.update_material(conn, latest["id"], status="superseded")
+                    duplicate_of = latest["id"]
 
             db.create_material(
                 conn,
+                material_id=material_id,
                 goal_id=goal_id,
                 topic_id=topic_id,
                 filename=filename,
@@ -320,18 +358,22 @@ async def inbox_upload(
                 summary=tagged["summary"],
                 tags=tags_json,
                 effort_hours=tagged["effort_hours"],
-                status="tagged",
+                status=status,
+                duplicate_of=duplicate_of,
             )
+            seen_hashes.add(content_hash)
             conn.commit()
             results.append(
                 {
                     "filename": filename,
-                    "status": "ready",
+                    "status": status,
                     "material_id": material_id,
                     "topic_id": topic_id,
                     "summary": tagged["summary"],
                     "tags": tagged["tags"],
                     "effort_hours": tagged["effort_hours"],
+                    "duplicate_of": duplicate_of,
+                    "cluster_relation": relation,
                 }
             )
         return results

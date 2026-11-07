@@ -100,6 +100,29 @@ def test_upload_returns_ready_offline():
     assert body[0]["status"] == "ready"
     assert body[0]["material_id"]
     assert body[0]["filename"] == "notes.md"
+    assert "cluster_relation" in body[0]
+
+
+def test_upload_duplicate_content():
+    c = _client()
+    data = b"# Duplicate target\n\nUnique content for dedup test."
+    r1 = c.post(
+        "/api/inbox/upload",
+        files={"files": ("notes.md", data, "text/markdown")},
+    )
+    assert r1.status_code == 200, r1.text
+    first = r1.json()[0]
+    assert first["status"] == "ready"
+
+    r2 = c.post(
+        "/api/inbox/upload",
+        files={"files": ("notes_copy.md", data, "text/markdown")},
+    )
+    assert r2.status_code == 200, r2.text
+    second = r2.json()[0]
+    assert second["status"] == "duplicate"
+    assert second["material_id"] == first["material_id"]
+    assert "identical content" in second["reason"]
 
 
 def test_ics_import_roundtrip():
