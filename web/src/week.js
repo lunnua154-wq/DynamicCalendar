@@ -141,7 +141,7 @@ async function loadEvents() {
     setText(rangeEl, `${utcDay(view.currentStart)} – ${utcDay(view.currentEnd)}`);
     await updateProgress(events);
     const empty = events.length === 0;
-    weekEmpty.hidden = !isMobile || empty;
+    weekEmpty.classList.toggle("hidden", !isMobile || empty);
     if (isMobile) renderMobileList();
   } catch (err) {
     toast("Failed to load week: " + err.message, "error");
@@ -177,7 +177,7 @@ async function updateProgress(events) {
     plannedMin = 0;
     doneMin = 0;
     events.forEach((e) => {
-      const job = e.extendedProps.job;
+      const job = e.job;
       if (!job) return;
       const mins = job.duration_min || 0;
       plannedMin += mins;
@@ -185,10 +185,10 @@ async function updateProgress(events) {
     });
   }
   if (plannedMin === 0) {
-    progressWrap.hidden = true;
+    progressWrap.classList.toggle("hidden", true);
     return;
   }
-  progressWrap.hidden = false;
+  progressWrap.classList.toggle("hidden", false);
   const pct = Math.round((doneMin / plannedMin) * 100);
   progressBar.style.width = `${pct}%`;
   setText(progressText, `${formatHours(doneMin / 60)} / ${formatHours(plannedMin / 60)}`);
@@ -220,7 +220,6 @@ async function moveJob(jobId, startIso, endIso) {
     method: "POST",
     body: { slot_start: startIso, slot_end: endIso },
   });
-  pinnedJobs.add(jobId);
   toast("Job rescheduled", "success");
   loadEvents();
 }
@@ -237,10 +236,10 @@ async function replanOpenGoals() {
   loadEvents();
 }
 
-function openPopover(job, anchorRect) {
+function openPopover(job, anchorRect, fcEvent) {
   closePopover();
   currentJobId = job.id;
-  popover.hidden = false;
+  popover.classList.toggle("hidden", false);
   popover.innerHTML = "";
 
   const close = document.createElement("button");
@@ -251,18 +250,18 @@ function openPopover(job, anchorRect) {
 
   const title = document.createElement("div");
   title.className = "font-semibold mb-1";
-  title.textContent = job.title || "Job";
+  title.textContent = fcEvent.title || "Job";
   popover.appendChild(title);
 
   const line = document.createElement("div");
   line.className = "text-xs text-slate-500 mb-2";
-  line.textContent = `${utcDay(job.slot_start)} ${utcTime(job.slot_start)}–${utcTime(job.slot_end)} · ${job.duration_min != null ? job.duration_min + "m" : ""}`;
+  line.textContent = `${utcDay(fcEvent.start)} ${utcTime(fcEvent.start)}–${utcTime(fcEvent.end)} · ${job.duration_min != null ? job.duration_min + "m" : ""}`;
   popover.appendChild(line);
 
   const kind = document.createElement("div");
   kind.className = "text-xs text-slate-500 mb-3";
   kind.textContent = job.kind === "revision" ? `Revision R${job.revision_round ?? ""}` : "Learn job";
-  const pinned = pinnedJobs.has(job.id) || job.pinned === 1;
+  const pinned = job.pinned === 1;
   if (pinned) {
     kind.textContent += "  📌 pinned";
   }
@@ -309,7 +308,7 @@ function openPopover(job, anchorRect) {
 }
 
 function closePopover() {
-  popover.hidden = true;
+  popover.classList.toggle("hidden", true);
   currentJobId = null;
 }
 
@@ -334,8 +333,8 @@ function renderMobileList() {
     listEl.appendChild(header);
 
     dayEvents.forEach((e) => {
-      const job = e.extendedProps.job;
-      const isExternal = e.extendedProps.kind === "external";
+      const job = e.job;
+      const isExternal = e.kind === "external";
       const done = job && job.status === "done";
 
       const row = document.createElement("div");
@@ -347,7 +346,7 @@ function renderMobileList() {
 
       const time = document.createElement("div");
       time.className = "text-[10px] text-slate-500 shrink-0";
-      time.textContent = e.allDay ? "All day" : `${utcTime(e.dtstart)}–${utcTime(e.dtend)}`;
+      time.textContent = e.all_day === 1 ? "All day" : `${utcTime(e.dtstart)}–${utcTime(e.dtend)}`;
       row.appendChild(time);
 
       const info = document.createElement("div");
@@ -359,7 +358,7 @@ function renderMobileList() {
       const meta = document.createElement("div");
       meta.className = "text-[9px] text-slate-400 truncate";
       meta.textContent = isExternal
-        ? `· ${e.extendedProps.venue || ""}`
+        ? `· ${e.venue || ""}`
         : job
         ? `· ${job.duration_min != null ? job.duration_min + "m" : ""} ${job.kind === "revision" ? "R" + job.revision_round : "learn"}`
         : "";
@@ -388,8 +387,8 @@ function toggleMobileView() {
   const mobile = window.innerWidth < 768;
   if (mobile === isMobile) return;
   isMobile = mobile;
-  calendarEl.hidden = mobile;
-  listEl.hidden = !mobile;
+  calendarEl.classList.toggle("hidden", mobile);
+  listEl.classList.toggle("hidden", !mobile);
   if (mobile) {
     renderMobileList();
   } else if (calendar) {
@@ -447,7 +446,7 @@ calendar = new Calendar(calendarEl, {
     const rect = info.jsEvent
       ? { left: info.jsEvent.pageX, top: info.jsEvent.pageY, bottom: info.jsEvent.pageY, width: 0 }
       : { left: 100, top: 100, bottom: 120, width: 0 };
-    openPopover(job, rect);
+    openPopover(job, rect, info.event);
   },
   eventDrop: async (info) => {
     const job = info.event.extendedProps.job;
@@ -456,6 +455,7 @@ calendar = new Calendar(calendarEl, {
     const endIso = info.event.end ? isoSeconds(info.event.end) : isoSeconds(addMinutes(info.event.start, draggedDuration || 50));
     try {
       await moveJob(job.id, startIso, endIso);
+      pinnedJobs.add(info.event.id);
     } catch (err) {
       info.revert();
       toast("Can't move there: " + err.message, "error");
@@ -470,7 +470,7 @@ toggleMobileView();
 
 btnToday.onclick = () => calendar.today();
 document.addEventListener("click", (e) => {
-  if (!popover.hidden && !popover.contains(e.target)) closePopover();
+  if (!popover.classList.contains("hidden") && !popover.contains(e.target)) closePopover();
 });
 
 loadEvents();
