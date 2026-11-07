@@ -260,3 +260,19 @@ def test_convert_failed_reason_not_unsupported(conn, data_dir, monkeypatch):
     assert "unsupported format" not in material["status_reason"]
     # original file kept on disk
     assert (data_dir / "originals" / f"{material['id']}.md").exists()
+
+
+def test_llm_duplicate_verdict_resolves_topic_not_crash(conn, data_dir):
+    """An LLM 'duplicate' verdict carries a *topic* id; resolve the root
+    material in that topic instead of crashing on get_material(topic_id)."""
+    raw = b"# A\nsome notes on limits"
+    _, first = _ingest(conn, data_dir, "limits.md", raw)
+    assert first["status"] == "ready"
+    # near-identical content with a different hash; LLM says duplicate of the topic
+    other = b"# A\nnotes on limits, slightly reworded for the stub"
+    client = StubClient(relation="duplicate", topic_id=first["topic_id"], topic_name="limits")
+    stored, material = _ingest(conn, data_dir, "limits_v2.md", other, client=client)
+    assert stored["status"] == "processing"
+    assert material["status"] == "duplicate"
+    assert material["duplicate_of"] == first["id"]
+    assert material["topic_id"] == first["topic_id"]

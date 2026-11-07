@@ -162,7 +162,7 @@ def list_events(
             clauses.append("dtstart < ?")
             params.append(to_iso)
         sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY dtstart, title"
+    sql += " ORDER BY dtstart, title, id"
     rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
@@ -284,7 +284,7 @@ def list_jobs(
         params.append(to_iso)
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY e.dtstart, e.title"
+    sql += " ORDER BY e.dtstart, e.title, e.id"
     rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
@@ -357,7 +357,7 @@ def jobs_for_goal(conn: sqlite3.Connection, goal_id: str) -> list[dict[str, Any]
         SELECT j.*, e.dtstart AS slot_start, e.dtend AS slot_end
         FROM jobs j JOIN events e ON e.id = j.event_id
         WHERE j.goal_id = ?
-        ORDER BY e.dtstart
+        ORDER BY e.dtstart, j.id
         """,
         (goal_id,),
     ).fetchall()
@@ -515,7 +515,9 @@ def update_material(
 
 def find_material_by_hash(conn: sqlite3.Connection, content_hash: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT * FROM materials WHERE content_hash = ?", (content_hash,)
+        "SELECT * FROM materials WHERE content_hash = ? "
+        "ORDER BY created_at ASC LIMIT 1",
+        (content_hash,),
     ).fetchone()
     return None if row is None else dict(row)
 
@@ -553,44 +555,6 @@ def find_original_material_by_hash(
     return cur
 
 
-def goal_progress(conn: sqlite3.Connection, goal_id: str) -> dict[str, Any]:
-    """Progress fields for a goal.
-
-    progress = done learn/revision minutes / total material effort hours
-    (clamp 0..1; 0 when no effort). Only materials with status in
-    (ready, tagged, new) count toward total effort.
-    """
-    total_minutes = 0.0
-    for r in conn.execute(
-        "SELECT effort_hours, status FROM materials WHERE goal_id = ?", (goal_id,)
-    ).fetchall():
-        if (
-            r["status"] in ("ready", "tagged", "new")
-            and r["effort_hours"] is not None
-        ):
-            total_minutes += float(r["effort_hours"]) * 60
-    done_minutes = 0
-    planned = 0
-    done = 0
-    for j in conn.execute(
-        "SELECT status, duration_min FROM jobs WHERE goal_id = ?", (goal_id,)
-    ).fetchall():
-        if j["status"] == "done":
-            done_minutes += int(j["duration_min"])
-            done += 1
-        elif j["status"] == "pending":
-            planned += 1
-    progress = 0.0
-    if total_minutes > 0:
-        progress = min(1.0, done_minutes / total_minutes)
-    return {
-        "progress": round(progress, 4),
-        "total_effort_hours": round(total_minutes / 60, 4),
-        "done_effort_hours": round(done_minutes / 60, 4),
-        "planned_jobs": planned,
-        "done_jobs": done,
-    }
-
 
 # ---------------------------------------------------------------- chat
 
@@ -607,6 +571,6 @@ def add_chat_message(
 
 def list_chat_messages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT * FROM chat_messages ORDER BY created_at"
+        "SELECT * FROM chat_messages ORDER BY created_at, rowid"
     ).fetchall()
     return [dict(r) for r in rows]

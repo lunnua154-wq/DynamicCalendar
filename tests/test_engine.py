@@ -1,27 +1,31 @@
 """Deterministic engine tests — injected clock, temp SQLite, no network.
 
-Covers invariants E1–E9 from docs/TESTING.md.
+Covers invariants E1–E13 from docs/TESTING.md.
 """
 
-import os
-import tempfile
+import shutil
+import uuid
+from pathlib import Path
 
 import pytest
 
 from app import db, engine
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 @pytest.fixture
 def conn():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+    base = _REPO_ROOT / "data" / "_test" / uuid.uuid4().hex
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / "test.db"
     c = db.connect(path)
     db.init_db(c)
     try:
         yield c
     finally:
         c.close()
-        os.unlink(path)
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def _add_externals(conn):
@@ -397,3 +401,106 @@ def test_pinned_job_clobbered_by_external_is_moved(conn):
     assert all(j["pinned"] == 0 for j in replacements), (
         "replacement must be re-placed unpinned"
     )
+
+
+# ---------------------------------------------------------------------------
+# M5 regression: review findings B1/M3/M5
+# ---------------------------------------------------------------------------
+
+def _seed_done_learn(conn, goal_id, material_id, done_at, duration=50):
+    event_id = db.create_event(
+        conn,
+        kind="study",
+        title="old",
+        dtstart="2026-10-31T08:00:00Z",
+        dtend="2026-10-31T08:50:00Z",
+        locked=1,
+    )
+    job_id = db.create_job(
+        conn,
+        event_id=event_id,
+        goal_id=goal_id,
+        material_id=material_id,
+        kind="learn",
+        duration_min=duration,
+        status="done",
+    )
+    db.update_job(conn, job_id, done_at=done_at)
+    return job_id
+
+
+def test_revision_round_not_duplicated_for_today_kept_jobs(conn):
+    """A surviving pending revision scheduled for today blocks re-creation."""
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    goal_id = db.create_goal(conn, title="G", deadline="2027-06-30T00:00:00Z")
+    mat_id = db.new_id()
+    db.create_material(
+        conn,
+        material_id=mat_id,
+        goal_id=goal_id,
+        topic_id=None,
+        filename="x.md",
+        original_path="/x",
+        markdown_path="/x",
+        content_hash="hx",
+        summary=None,
+        tags=None,
+        effort_hours=1.0,
+        status="ready",
+    )
+    learn_id = _seed_done_learn(conn, goal_id, mat_id, "2026-10-31T09:00:00Z")
+    rev_event = db.create_event(
+        conn,
+        kind="revision",
+        title="",
+        dtstart=f"{today}T20:00:00Z",
+        dtend=f"{today}T20:50:00Z",
+        locked=1,
+    )
+    db.create_job(
+        conn,
+        event_id=rev_event,
+        goal_id=goal_id,
+        material_id=mat_id,
+        kind="revision",
+        duration_min=50,
+        status="pending",
+        revision_round=1,
+        parent_job_id=learn_id,
+    )
+    now_iso = f"{today}T06:00:00Z"
+    engine.replan(conn, goal_id, now_iso)
+    rounds = [
+        j for j in db.jobs_for_goal(conn, goal_id)
+        if j["kind"] == "revision" and j["revision_round"] == 1
+    ]
+    assert len(rounds) == 1
+
+
+def test_duplicate_and_error_materials_are_not_planned(conn):
+    """Duplicate/superseded/error/processing materials get no jobs."""
+    goal_id = db.create_goal(conn, title="G", deadline="2027-06-30T00:00:00Z")
+    ready_id = db.new_id()
+    for suffix, status in [("a", "ready"), ("b", "duplicate"), ("c", "error"),
+                           ("d", "superseded"), ("e", "processing")]:
+        db.create_material(
+            conn,
+            material_id=ready_id + suffix,
+            goal_id=goal_id,
+            topic_id=None,
+            filename=f"{suffix}.md",
+            original_path="/x",
+            markdown_path="/x",
+            content_hash="h" + suffix,
+            summary=None,
+            tags=None,
+            effort_hours=0.5,
+            status=status,
+        )
+    engine.replan(conn, goal_id, "2026-11-07T06:00:00Z")
+    planned = {
+        j["material_id"] for j in db.jobs_for_goal(conn, goal_id)
+    }
+    assert planned == {ready_id + "a"}

@@ -12,9 +12,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -46,11 +47,19 @@ def _page(name: str) -> Path:
 
 app = FastAPI(title="DynaCalendar")
 
+# The app is served same-origin (FastAPI serves web/dist, and the Vite dev
+# server proxies /api), so no cross-origin browser access is expected in
+# production. Only the Vite dev origins are allowed, never a wildcard.
+_DEV_ORIGINS = [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_DEV_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -59,10 +68,14 @@ async def _domain_error_handler(_, exc: DynaCalendarError) -> JSONResponse:
     return JSONResponse({"error": exc.message}, status_code=exc.status_code)
 
 
+# One handler covers both FastAPI's HTTPException and Starlette's
+# (unknown-path 404 / method-not-allowed 405 — e.g. routes not matched).
 @app.exception_handler(HTTPException)
-async def _http_error_handler(_, exc: HTTPException) -> JSONResponse:
-    """Normalise FastAPI's ``detail`` into the documented error envelope."""
-    return JSONResponse({"error": str(exc.detail)}, status_code=exc.status_code)
+@app.exception_handler(StarletteHTTPException)
+async def _http_error_handler(_, exc) -> JSONResponse:
+    """Normalise FastAPI's/Starlette's ``detail`` into the documented envelope."""
+    detail = getattr(exc, "detail", "error")
+    return JSONResponse({"error": str(detail)}, status_code=exc.status_code)
 
 
 @app.exception_handler(RequestValidationError)
@@ -78,13 +91,22 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parse_iso_dt(value: str) -> datetime:
+def _parse_iso_dt(value: Any) -> datetime:
     """Parse an ISO-8601 UTC string (``...Z``, ``+00:00``, ms, or date-only)
-    into an aware UTC datetime."""
+    into an aware UTC datetime.
+
+    Raises ``ValidationError`` (mapped to 422) for non-string or garbage input
+    instead of leaking a raw ValueError/TypeError as a 500.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("expected an ISO-8601 timestamp string")
     s = value.strip()
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    dt = datetime.fromisoformat(s)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError as exc:
+        raise ValidationError(f"invalid ISO-8601 timestamp: {value[:80]}") from exc
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
@@ -104,17 +126,26 @@ async def _read_body(request: Request) -> dict[str, Any]:
     """
     ct = request.headers.get("content-type", "") or ""
     if "application/json" in ct:
-        data = await request.json()
+        try:
+            data = await request.json()
+        except Exception as exc:
+            raise ValidationError("request body is not valid JSON") from exc
         return data if isinstance(data, dict) else {}
     if "application/x-www-form-urlencoded" in ct or "multipart/form-data" in ct:
-        form = await request.form()
+        try:
+            form = await request.form()
+        except Exception as exc:
+            raise ValidationError("request body is not valid form data") from exc
         return {k: v for k, v in form.items()}
     # Fallback: try JSON, then form.
     try:
         data = await request.json()
         return data if isinstance(data, dict) else {}
     except Exception:
-        form = await request.form()
+        try:
+            form = await request.form()
+        except Exception:
+            return {}
         return {k: v for k, v in form.items()}
 
 
@@ -237,7 +268,7 @@ if _ASSETS_DIR.exists():
 # --------------------------------------------------------------------------- calendar
 
 @app.get("/api/events")
-def list_events(from_: str | None = None, to: str | None = None):
+def list_events(from_: str | None = Query(None, alias="from"), to: str | None = Query(None, alias="to")):
     conn = _get_conn()
     try:
         events = db.list_events(conn, from_, to)
@@ -269,9 +300,19 @@ def list_events(from_: str | None = None, to: str | None = None):
 
 @app.post("/api/ics/import")
 async def ics_import(file: UploadFile = File(...)):
+    # import_ics manages its own connection (all-or-nothing import).
+    result = ics_sync.import_ics(file.file, db_path=DEFAULT_DB_PATH)
+    # New/changed external events are hard constraints: replan every open
+    # goal so pending (and, where the import clobbers them, pinned) jobs
+    # never silently overlap the imported schedule.
     conn = _get_conn()
     try:
-        result = ics_sync.import_ics(file.file, db_path=DEFAULT_DB_PATH)
+        with conn:
+            open_goals = [g for g in db.list_goals(conn) if g["status"] == "open"]
+            for g in open_goals:
+                engine.replan(conn, g["id"], _now_utc())
+        result = dict(result)
+        result["replanned_goals"] = [g["id"] for g in open_goals]
         return result
     finally:
         conn.close()
@@ -301,9 +342,10 @@ def get_goal_endpoint(goal_id: str):
 @app.post("/api/goals")
 async def create_goal(request: Request):
     body = await _read_body(request)
-    title = (body.get("title") or "").strip()
-    if not title:
+    title = body.get("title")
+    if not isinstance(title, str) or not title.strip():
         raise HTTPException(status_code=422, detail="title is required")
+    title = title.strip()
     deadline = body.get("deadline")
     exam_event_id = body.get("exam_event_id") or None
     conn = _get_conn()
@@ -351,14 +393,16 @@ def replan_goal(goal_id: str):
 # --------------------------------------------------------------------------- jobs
 
 @app.get("/api/jobs")
-def list_jobs(from_: str | None = None, to: str | None = None):
+def list_jobs(from_: str | None = Query(None, alias="from"), to: str | None = Query(None, alias="to")):
     conn = _get_conn()
     try:
         jobs = db.list_jobs(conn, from_, to)
         materials = {m["id"]: m for m in db.list_materials(conn)}
         for j in jobs:
             m = materials.get(j["material_id"], {})
-            j["material_title"] = m.get("filename")
+            title = m.get("filename") or "Study job"
+            j["material_title"] = title
+            j["title"] = title
         return jobs
     finally:
         conn.close()
@@ -396,12 +440,15 @@ async def move_job(job_id: str, request: Request):
         )
     new_start = _normalize_iso(slot_start)
     new_end = _normalize_iso(slot_end)
+    if new_end <= new_start:
+        raise ValidationError("slot_end must be after slot_start")
     conn = _get_conn()
     try:
         with conn:
             job = db.get_job(conn, job_id)  # 404 if missing
             if job["status"] in ("done", "skipped"):
                 raise ConflictError(f"cannot move a {job['status']} job")
+            was_conflicted = job["status"] == "conflicted"
             now_str = _now_utc()
             if new_start < now_str:
                 raise ConflictError("new slot is in the past")
@@ -425,7 +472,13 @@ async def move_job(job_id: str, request: Request):
                 if new_start < j["slot_end"] and j["slot_start"] < new_end:
                     raise ConflictError(f"new slot overlaps job {j['id']}")
             db.update_event(conn, job["event_id"], dtstart=new_start, dtend=new_end)
-            db.update_job(conn, job_id, pinned=1)
+            # A conflicted job explicitly moved by the user becomes a normal
+            # pending job again (pinned); otherwise it stays conflicted
+            # forever and its revision round is silently suppressed.
+            job_updates = {"pinned": 1}
+            if was_conflicted:
+                job_updates["status"] = "pending"
+            db.update_job(conn, job_id, **job_updates)
             result = engine.replan(conn, job["goal_id"], now_str)
         return {"job": db.get_job(conn, job_id), "moved_jobs": result["moved_jobs"]}
     finally:
@@ -601,12 +654,13 @@ async def set_effort(material_id: str, request: Request):
     hours = body.get("hours")
     if hours is None:
         raise HTTPException(status_code=422, detail="hours is required")
-    validate_effort_hours(float(hours))
+    hours = _as_float(hours, "hours")
+    validate_effort_hours(hours)
     conn = _get_conn()
     try:
         with conn:
             material = db.get_material(conn, material_id)  # 404 if missing
-            db.update_material(conn, material_id, effort_hours=float(hours))
+            db.update_material(conn, material_id, effort_hours=hours)
             if material["goal_id"]:
                 engine.replan(conn, material["goal_id"], _now_utc())
         return db.get_material(conn, material_id)
@@ -617,12 +671,14 @@ async def set_effort(material_id: str, request: Request):
 @app.post("/api/inbox/files/{material_id}/attach")
 async def attach_file(material_id: str, request: Request):
     body = await _read_body(request)
-    goal_id = body.get("goal_id") or None
-    if not goal_id:
+    goal_id = body.get("goal_id")
+    if not isinstance(goal_id, str) or not goal_id.strip():
         raise HTTPException(status_code=422, detail="goal_id is required")
+    goal_id = goal_id.strip()
     conn = _get_conn()
     try:
         with conn:
+            db.get_goal(conn, goal_id)  # 404 if missing — checked before any FK fires
             material = db.get_material(conn, material_id)  # 404 if missing
             if material["status"] != "ready":
                 raise HTTPException(
@@ -643,6 +699,26 @@ async def attach_file(material_id: str, request: Request):
 
 # --------------------------------------------------------------------------- topics
 
+def _topic_out(t: dict[str, Any], members: list[dict[str, Any]]) -> dict[str, Any]:
+    """The documented topic shape (docs/API.md)."""
+    return {
+        "id": t["id"],
+        "name": t["name"],
+        "goal_id": t["goal_id"],
+        "created_at": t["created_at"],
+        "file_count": len(members),
+        "members": [
+            {
+                "id": m["id"],
+                "filename": m["filename"],
+                "status": m["status"],
+                "effort_hours": m["effort_hours"],
+            }
+            for m in members
+        ],
+    }
+
+
 @app.get("/api/topics")
 def list_topics_endpoint():
     conn = _get_conn()
@@ -653,25 +729,7 @@ def list_topics_endpoint():
         for m in materials:
             if m["topic_id"]:
                 by_topic.setdefault(m["topic_id"], []).append(m)
-        out = []
-        for t in topics:
-            members = by_topic.get(t["id"], [])
-            out.append(
-                {
-                    "id": t["id"],
-                    "name": t["name"],
-                    "goal_id": t["goal_id"],
-                    "members": [
-                        {
-                            "id": m["id"],
-                            "filename": m["filename"],
-                            "status": m["status"],
-                        }
-                        for m in members
-                    ],
-                }
-            )
-        return out
+        return [_topic_out(t, by_topic.get(t["id"], [])) for t in topics]
     finally:
         conn.close()
 
@@ -679,9 +737,10 @@ def list_topics_endpoint():
 @app.post("/api/topics/{topic_id}/rename")
 async def rename_topic(topic_id: str, request: Request):
     body = await _read_body(request)
-    name = (body.get("name") or "").strip()
-    if not name:
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip():
         raise HTTPException(status_code=422, detail="name is required")
+    name = name.strip()
     conn = _get_conn()
     try:
         with conn:
@@ -697,6 +756,10 @@ async def merge_topics_endpoint(request: Request):
     body = await _read_body(request)
     source_id = body.get("source_id")
     target_id = body.get("target_id")
+    if not isinstance(source_id, str) or not isinstance(target_id, str):
+        raise HTTPException(
+            status_code=422, detail="source_id and target_id must be strings"
+        )
     if not source_id or not target_id:
         raise HTTPException(
             status_code=422, detail="source_id and target_id are required"
@@ -727,11 +790,13 @@ async def merge_topics_endpoint(request: Request):
             )
             for gid in affected:
                 engine.replan(conn, gid, _now_utc())
-        return {
-            "ok": True,
-            "source_id": source_id,
-            "target_id": target_id,
-        }
+            topic_row = db.get_topic(conn, target_id)
+            members = [
+                m
+                for m in db.list_materials(conn)
+                if m["topic_id"] == target_id
+            ]
+            return _topic_out(topic_row, members)
     finally:
         conn.close()
 
@@ -800,6 +865,10 @@ def stats(goal_id: str | None = None):
     try:
         now = _parse_iso_dt(_now_utc())
         today = now.date()
+        # by_day covers the trailing 13 days plus today and the next 14, so
+        # the week view can show Mon–Sun data and the month grid can shade
+        # upcoming days. Jobs outside the window are ignored for by_day/totals.
+        start = today - timedelta(days=13)
         end = today + timedelta(days=14)
 
         goals_rows = db.list_goals(conn)
@@ -809,7 +878,7 @@ def stats(goal_id: str | None = None):
                 raise NotFoundError(f"goal {goal_id} not found")
 
         by_day: dict[str, dict[str, Any]] = {}
-        d = today
+        d = start
         while d <= end:
             by_day[d.isoformat()] = {
                 "date": d.isoformat(),
@@ -831,7 +900,7 @@ def stats(goal_id: str | None = None):
             rev_due = 0
             for j in jobs:
                 start_date = _parse_iso_dt(j["slot_start"]).date()
-                if start_date > end:
+                if start_date > end or start_date < start:
                     continue
                 if j["status"] == "pending":
                     planned_min += int(j["duration_min"])
@@ -915,7 +984,9 @@ def _validate_revision_intervals_days(value: Any) -> list[int]:
         if isinstance(v, bool) or not isinstance(v, int) or not (1 <= v <= 60):
             raise ValidationError("revision_intervals_days items must be ints 1-60")
         out.append(v)
-    return out
+    # Rounds are applied in list order; a caller-supplied unsorted list would
+    # otherwise schedule round 1 after round 2.
+    return sorted(out)
 
 
 def _validate_ocr_provider(value: Any) -> str:
@@ -931,11 +1002,30 @@ def _validate_ocr_min_chars(value: Any) -> int:
     return v
 
 
+# Keys whose values must never leave the server. The web client only needs
+# to know whether they are configured (the modal shows an empty field).
+_SENSITIVE_SETTING_KEYS = {"llm_api_key", "cf_api_token"}
+
+
 @app.get("/api/settings")
 def get_settings():
     conn = _get_conn()
     try:
-        return [{**r, "value": _decode_setting(r["value"])} for r in db.list_settings(conn)]
+        rows = db.list_settings(conn)
+        out = []
+        for row in rows:
+            item = dict(row)
+            if item["key"] in _SENSITIVE_SETTING_KEYS:
+                configured = bool(_decode_setting(item["value"]))
+                item["value"] = ""
+                item["configured"] = configured
+            else:
+                try:
+                    item["value"] = json.loads(item["value"])
+                except (json.JSONDecodeError, TypeError):
+                    pass  # leave raw string
+            out.append(item)
+        return out
     finally:
         conn.close()
 

@@ -197,17 +197,33 @@ def process_material(
     topic_name: str | None = None
 
     if relation == "duplicate":
-        # Duplicate of an existing material: share its topic.
-        dupe_material_id = clustered.get("topic_id")
-        if dupe_material_id is not None:
-            dupe = db.get_material(conn, dupe_material_id)
-            topic_id = dupe["topic_id"]
-            if topic_id is not None:
-                topic_row = conn.execute(
-                    "SELECT name FROM topics WHERE id = ?", (topic_id,)
+        # The cluster verdict classifies the file against an existing *topic*,
+        # so ``clustered['topic_id']`` is a topic id — not a material id.
+        # Link the duplicate to the root material of that topic (never to
+        # this material, and never to another duplicate) and stop work.
+        topic_id = clustered.get("topic_id")
+        dupe_material_id = None
+        if topic_id is not None:
+            row = conn.execute(
+                """
+                SELECT id FROM materials
+                WHERE topic_id = ? AND status NOT IN ('superseded', 'duplicate')
+                ORDER BY created_at ASC LIMIT 1
+                """,
+                (topic_id,),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT id FROM materials WHERE topic_id = ? "
+                    "ORDER BY created_at ASC LIMIT 1",
+                    (topic_id,),
                 ).fetchone()
-                topic_name = topic_row["name"] if topic_row else None
-        # mark this material as a duplicate
+            dupe_material_id = row["id"] if row else None
+            topic_row = conn.execute(
+                "SELECT name FROM topics WHERE id = ?", (topic_id,)
+            ).fetchone()
+            topic_name = topic_row["name"] if topic_row else None
+        # mark this material as a duplicate and stop (no jobs/plans attached)
         db.update_material(
             conn,
             material_id,
@@ -219,6 +235,12 @@ def process_material(
             effort_hours=effort,
             markdown_path=str(markdown_path),
         )
+        conn.commit()
+        result = dict(db.get_material(conn, material_id))
+        result["topic_name"] = topic_name
+        result["cluster_relation"] = relation
+        result["cluster_reason"] = str(clustered.get("reason", ""))
+        return result
     elif relation == "version":
         # New version of an existing material: supersede the latest member of
         # the given topic.
@@ -316,7 +338,6 @@ def merge_topics(
         (target_topic_id, source_topic_id),
     )
     conn.execute("DELETE FROM topics WHERE id = ?", (source_topic_id,))
-    conn.commit()
 
     row = conn.execute(
         "SELECT * FROM topics WHERE id = ?", (target_topic_id,)
