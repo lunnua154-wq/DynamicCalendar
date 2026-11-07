@@ -10,11 +10,25 @@ Rules (docs/ARCHITECTURE.md):
   - pending jobs on today's date keep their slots (no churn)
   - free slots fill from today -> goal deadline, earliest first
   - after a learn job completes, revision rounds at +1d/+3d/+7d/+14d
+  - pinned jobs never move and are never re-derived
+
+M3 additions:
+  - ``jobs.pinned`` / ``jobs.parent_job_id`` schema columns (see app/db.py)
+  - re-derivable jobs are ``status IN ('pending','conflicted')`` AND ``pinned = 0``;
+    they are deleted at the start of replan and re-derived
+  - occupied slots = done jobs + pinned pending jobs (+ today-kept pending jobs)
+  - ``daily_capacity_hours`` is respected for *everything* placed (revisions and
+    learn jobs), counting already-occupied done/pinned minutes against the day
+  - revision rounds are de-duplicated against existing done/skipped/pinned
+    revisions for the same learn job (parent_job_id) and round
+  - revisions that cannot be placed by the goal deadline become ``conflicted``
+    (never silently dropped)
 """
 
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -62,10 +76,10 @@ def _study_slots(day, slot_minutes: int) -> list[tuple[datetime, datetime]]:
 
 
 def _occupied_ranges(jobs: list[dict[str, Any]]) -> list[tuple[datetime, datetime]]:
+    """Immutable time ranges: done jobs and pinned/kept pending jobs."""
     ranges: list[tuple[datetime, datetime]] = []
     for j in jobs:
-        if j["status"] in ("done", "pending"):
-            ranges.append((_parse(j["slot_start"]), _parse(j["slot_end"])))
+        ranges.append((_parse(j["slot_start"]), _parse(j["slot_end"])))
     return ranges
 
 
@@ -98,6 +112,7 @@ def replan(
     capacity_minutes = int(settings.daily_capacity_hours * 60)
     intervals = settings.revision_intervals_days or [1, 3, 7, 14]
 
+    # External events are read-only hard constraints.
     externals: list[tuple[datetime, datetime]] = []
     for e in db.list_events(conn):
         if e["kind"] != "external" or not e["locked"]:
@@ -110,39 +125,74 @@ def replan(
     jobs = db.jobs_for_goal(conn, goal_id)
     done_jobs = [j for j in jobs if j["status"] == "done"]
     pending_jobs = [j for j in jobs if j["status"] == "pending"]
-    done_learn = [j for j in done_jobs if j["kind"] == "learn"]
 
-    # Occupied ranges: done jobs always; pending jobs on TODAY stay put.
-    occupied = _occupied_ranges(done_jobs)
-    kept_pending_ids = set()
+    # Pinned pending jobs that overlap an external event cannot survive a
+    # re-import: external events are read-only hard constraints, so those pinned
+    # jobs are deleted and re-placed unpinned. Pinned jobs that do not overlap
+    # externals stay occupied and untouched.
+    safe_pinned_jobs = []
+    clobbered_pinned_ids = set()
     for j in pending_jobs:
-        if _parse(j["slot_start"]).date() == today:
-            occupied.append((_parse(j["slot_start"]), _parse(j["slot_end"])))
-            kept_pending_ids.add(j["id"])
+        if j["pinned"] != 1:
+            continue
+        js, je = _parse(j["slot_start"]), _parse(j["slot_end"])
+        if any(_overlaps(js, je, es, ee) for es, ee in externals):
+            clobbered_pinned_ids.add(j["id"])
+        else:
+            safe_pinned_jobs.append(j)
 
-    # Free slots from today -> deadline (mutable cursor consumed by placement).
-    free: list[tuple[datetime, datetime]] = []
-    day = today
-    while day <= deadline:
-        day_minutes_used = 0
-        for slot_start, slot_end in _study_slots(day, slot_minutes):
-            if day_minutes_used + slot_minutes > capacity_minutes:
-                break
-            if any(
-                _overlaps(slot_start, slot_end, es, ee) for es, ee in externals
-            ):
-                continue
-            if any(
-                _overlaps(slot_start, slot_end, os_, oe) for os_, oe in occupied
-            ):
-                continue
-            free.append((slot_start, slot_end))
-            day_minutes_used += slot_minutes
-        day += timedelta(days=1)
+    # Today's pending jobs keep their slots this run (no churn, no DB mutation).
+    # Clobbered pinned jobs are excluded: they are deleted below and must not keep
+    # occupying their old slot.
+    kept_pending = [
+        j
+        for j in pending_jobs
+        if _parse(j["slot_start"]).date() == today
+        and j["id"] not in clobbered_pinned_ids
+    ]
+    kept_ids = {j["id"] for j in kept_pending}
 
-    placed_slots: list[tuple[datetime, datetime]] = []
+    # Re-derivable: pending or conflicted, unpinned, not kept today,
+    # plus pinned jobs whose slot is clobbered by an external event.
+    derivable = [
+        j
+        for j in jobs
+        if j["status"] in ("pending", "conflicted")
+        and j["pinned"] == 0
+        and j["id"] not in kept_ids
+        and j["id"] not in clobbered_pinned_ids
+    ] + [j for j in pending_jobs if j["id"] in clobbered_pinned_ids]
 
-    def is_free(slot_start, slot_end) -> bool:
+    # --- remove pending work that will be re-derived ---
+    moved_jobs: list[str] = []
+    for j in derivable:  # jobs_for_goal order is deterministic (dtstart, title)
+        moved_jobs.append(j["id"])
+        conn.execute("DELETE FROM jobs WHERE id = ?", (j["id"],))
+        db.delete_event(conn, j["event_id"])
+
+    derivable_ids = {j["id"] for j in derivable}
+    surviving = [j for j in jobs if j["id"] not in derivable_ids]
+
+    # Occupied slots = done + safe pinned pending + today-kept pending
+    # (immutable). A pinned job that is also kept today must be counted once.
+    occupied_jobs = (
+        done_jobs
+        + [j for j in safe_pinned_jobs if j["id"] not in kept_ids]
+        + kept_pending
+    )
+    occupied = _occupied_ranges(occupied_jobs)
+
+    # Per-day minutes already consumed by occupied jobs (counts against capacity).
+    day_used: dict = defaultdict(int)
+    for j in occupied_jobs:
+        day_used[_parse(j["slot_start"]).date()] += int(j["duration_min"])
+
+    revisions_added: list[str] = []
+
+    def is_placeable(slot_start, slot_end) -> bool:
+        d = slot_start.date()
+        if day_used.get(d, 0) + slot_minutes > capacity_minutes:
+            return False
         if any(
             _overlaps(slot_start, slot_end, es, ee) for es, ee in externals
         ):
@@ -151,88 +201,108 @@ def replan(
             _overlaps(slot_start, slot_end, os_, oe) for os_, oe in occupied
         ):
             return False
-        return not any(
-            _overlaps(slot_start, slot_end, ps, pe) for ps, pe in placed_slots
-        )
+        return True
 
-    moved_jobs: list[str] = []
-    revisions_added: list[str] = []
+    def find_placeable(from_day):
+        """Earliest free slot from ``from_day`` through the deadline inclusive.
 
-    # --- remove pending work that will be re-derived ---
-    for j in pending_jobs:
-        if j["id"] in kept_pending_ids:
-            continue
-        moved_jobs.append(j["id"])
-        conn.execute("DELETE FROM jobs WHERE id = ?", (j["id"],))
-        db.delete_event(conn, j["event_id"])
+        Never schedule in the past: any slot that starts before ``now`` is
+        skipped (only relevant for ``today``).
+        """
+        day = from_day
+        while day <= deadline:
+            for slot_start, slot_end in _study_slots(day, slot_minutes):
+                if slot_start < now:
+                    continue
+                d = slot_start.date()
+                if day_used.get(d, 0) + slot_minutes > capacity_minutes:
+                    break  # slots are chronological; the rest of the day won't fit either
+                if is_placeable(slot_start, slot_end):
+                    return slot_start, slot_end
+            day += timedelta(days=1)
+        return None
 
-    # --- place revisions for completed learn jobs ---
-    done_by_date = sorted(
-        done_learn,
+    def place(slot_start, slot_end) -> None:
+        occupied.append((slot_start, slot_end))
+        day_used[slot_start.date()] = day_used.get(slot_start.date(), 0) + slot_minutes
+
+    # --- revisions for completed learn jobs ---
+    done_learn = sorted(
+        (j for j in done_jobs if j["kind"] == "learn"),
         key=lambda j: (j["done_at"] or j["created_at"], j["id"]),
     )
-    for learn_job in done_by_date:
+    # Surviving revisions (done / skipped / pinned) block re-creating the same round.
+    existing_revisions = [j for j in surviving if j["kind"] == "revision"]
+
+    def revision_exists(learn_job_id: str, round_no: int) -> bool:
+        for j in existing_revisions:
+            if (
+                j["parent_job_id"] == learn_job_id
+                and j["revision_round"] == round_no
+                and (j["status"] in ("done", "skipped") or j["pinned"] == 1)
+            ):
+                return True
+        return False
+
+    for learn_job in done_learn:
         done_date = (
             _parse(learn_job["done_at"]).date()
             if learn_job["done_at"]
             else _parse(learn_job["created_at"]).date()
         )
-        duration = learn_job["duration_min"]
+        duration = int(learn_job["duration_min"])
         for round_no, interval in enumerate(intervals, start=1):
+            if revision_exists(learn_job["id"], round_no):
+                continue
             target = max(done_date + timedelta(days=interval), today)
-            placed = False
-            scan_day = target
-            end_scan = deadline + timedelta(days=max(intervals))
-            while scan_day <= end_scan and not placed:
-                if scan_day >= target:
-                    for slot_start, slot_end in _study_slots(
-                        scan_day, slot_minutes
-                    ):
-                        if is_free(slot_start, slot_end):
-                            job_id = _create_job_event(
-                                conn,
-                                goal_id,
-                                learn_job["material_id"],
-                                "revision",
-                                duration,
-                                round_no,
-                                slot_start,
-                                slot_end,
-                            )
-                            occupied.append((slot_start, slot_end))
-                            placed_slots.append((slot_start, slot_end))
-                            revisions_added.append(job_id)
-                            placed = True
-                            break
-                scan_day += timedelta(days=1)
-            if not placed:
+            slot = find_placeable(target)
+            if slot is not None:
+                slot_start, slot_end = slot
+                job_id = _create_job_event(
+                    conn,
+                    goal_id,
+                    learn_job["material_id"],
+                    "revision",
+                    duration,
+                    round_no,
+                    slot_start,
+                    slot_end,
+                    parent_job_id=learn_job["id"],
+                )
+                place(slot_start, slot_end)
+                revisions_added.append(job_id)
+            else:
                 _create_conflicted_revision(
-                    conn, goal_id, learn_job, round_no, duration, done_date
+                    conn,
+                    goal_id,
+                    learn_job,
+                    round_no,
+                    duration,
+                    done_date,
+                    parent_job_id=learn_job["id"],
                 )
 
     # --- place remaining learn work, material order, earliest free first ---
     materials = _materials_for_goal(conn, goal_id)
     default_effort = settings.default_effort_hours
+    surviving_learn = [j for j in surviving if j["kind"] == "learn"]
     for material in materials:
-        effort = (
-            material["effort_hours"]
-            if material["effort_hours"] is not None
-            else default_effort
-        )
+        effort = material["effort_hours"]
+        if effort is None:
+            effort = default_effort
         total_slots = max(1, math.ceil(effort * 60 / slot_minutes))
         covered = sum(
             1
-            for j in jobs
+            for j in surviving_learn
             if j["material_id"] == material["id"]
-            and j["kind"] == "learn"
-            and j["status"] in ("pending", "done")
+            and j["status"] in ("done", "pending")
         )
         needed = total_slots - covered
-        for slot_start, slot_end in free:
-            if needed <= 0:
+        for _ in range(needed):
+            slot = find_placeable(today)
+            if slot is None:
                 break
-            if not is_free(slot_start, slot_end):
-                continue
+            slot_start, slot_end = slot
             _create_job_event(
                 conn,
                 goal_id,
@@ -243,9 +313,7 @@ def replan(
                 slot_start,
                 slot_end,
             )
-            occupied.append((slot_start, slot_end))
-            placed_slots.append((slot_start, slot_end))
-            needed -= 1
+            place(slot_start, slot_end)
 
     return {"moved_jobs": moved_jobs, "revisions_added": revisions_added}
 
@@ -259,6 +327,7 @@ def _create_job_event(
     revision_round: int,
     start: datetime,
     end: datetime,
+    parent_job_id: str | None = None,
 ) -> str:
     event_id = db.create_event(
         conn,
@@ -277,6 +346,7 @@ def _create_job_event(
         duration_min=duration_min,
         status="pending",
         revision_round=revision_round,
+        parent_job_id=parent_job_id,
     )
     return job_id
 
@@ -288,6 +358,7 @@ def _create_conflicted_revision(
     round_no: int,
     duration_min: int,
     done_date,
+    parent_job_id: str | None = None,
 ) -> None:
     """Surface a revision that could not be placed (never silently dropped)."""
     event_id = db.create_event(
@@ -311,4 +382,5 @@ def _create_conflicted_revision(
         duration_min=duration_min,
         status="conflicted",
         revision_round=round_no,
+        parent_job_id=parent_job_id,
     )
