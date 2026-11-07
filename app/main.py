@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -26,7 +27,10 @@ from .config import (
     _decode_setting,
     validate_capacity_hours,
     validate_effort_hours,
+    validate_llm_base_url,
+    validate_llm_model,
     validate_slot_minutes,
+    validate_utc_offset_minutes,
 )
 from .errors import ConflictError, DynaCalendarError, NotFoundError, ValidationError
 
@@ -41,8 +45,19 @@ def _asset_dir() -> Path:
 
 
 def _page(name: str) -> Path:
-    p = DIST_DIR / name
-    return p if p.exists() else WEB_DIR / name
+    """Built page when available, else a page explaining how to build it.
+
+    Without this, a fresh checkout that never ran ``npm run build`` serves raw
+    HTML whose module imports (``@fullcalendar/core``) cannot load, so the user
+    sees a blank page and a console full of errors.
+    """
+    built = DIST_DIR / name
+    if built.exists():
+        return built
+    not_built = WEB_DIR / "not-built.html"
+    if not_built.exists():
+        return not_built
+    return WEB_DIR / name
 
 
 app = FastAPI(title="DynaCalendar")
@@ -82,7 +97,10 @@ async def _http_error_handler(_, exc) -> JSONResponse:
 async def _validation_error_handler(_, exc: RequestValidationError) -> JSONResponse:
     errors = exc.errors()
     first = errors[0].get("msg") if errors else "invalid request"
-    return JSONResponse({"error": str(first), "detail": errors}, status_code=422)
+    # jsonable_encoder keeps ctx values (e.g. ValueError instances) serialisable.
+    return JSONResponse(
+        {"error": str(first), "detail": jsonable_encoder(errors)}, status_code=422
+    )
 
 
 # --------------------------------------------------------------------------- helpers
@@ -116,6 +134,33 @@ def _normalize_iso(value: str) -> str:
     """Normalize ``...Z`` / ``+00:00`` / milliseconds / date-only to
     ``%Y-%m-%dT%H:%M:%SZ`` UTC."""
     return _parse_iso_dt(value).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _window_bound(value: str | None, *, end: bool) -> str | None:
+    """Normalise a ``from``/``to`` query parameter for the repository layer.
+
+    The documented contract is a **local calendar day** (``YYYY-MM-DD``) and the
+    repository compares ``dtstart < to`` / ``dtend > from``, so a date-only bound
+    must expand to the whole day: ``from`` -> 00:00:00Z, ``to`` -> the *next*
+    day's 00:00:00Z. Without this the last day of every range was silently
+    dropped (a month view lost its final day).
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "T" not in text:
+        try:
+            day = date.fromisoformat(text[:10])
+        except ValueError as exc:
+            raise ValidationError(
+                f"invalid date: {value} (expected YYYY-MM-DD)"
+            ) from exc
+        if end:
+            day = day + timedelta(days=1)
+        return f"{day.isoformat()}T00:00:00Z"
+    return _normalize_iso(text)
 
 
 async def _read_body(request: Request) -> dict[str, Any]:
@@ -199,6 +244,7 @@ def _build_chat_context(conn, now_iso: str) -> dict[str, Any]:
     end = today + timedelta(days=14)
     from_iso = now_iso
     to_iso = end.strftime("%Y-%m-%dT23:59:59Z")
+    settings = parse_settings(db.list_settings(conn))
 
     goals = []
     for g in db.list_goals(conn):
@@ -206,13 +252,25 @@ def _build_chat_context(conn, now_iso: str) -> dict[str, Any]:
             continue
         goals.append({**g, **_goal_progress(conn, g["id"])})
 
+    materials = db.list_materials(conn)
+    by_id = {m["id"]: m for m in materials}
     jobs = db.list_jobs(conn, from_iso=from_iso, to_iso=to_iso)
+    for job in jobs:
+        # The offline reply names the work: a custom event title wins, else the
+        # material file name (engine events carry an empty title on purpose).
+        material = by_id.get(job["material_id"]) or {}
+        job["material_title"] = (
+            job.get("event_title") or material.get("filename") or "Study job"
+        )
+        job["title"] = job["material_title"]
     events = db.list_events(conn, from_iso=from_iso, to_iso=to_iso)
     externals = [e for e in events if e["kind"] == "external"]
 
-    materials = db.list_materials(conn)
     return {
         "now": now_iso,
+        # Times in the reply are rendered in the user's local clock, matching
+        # the calendar (storage stays UTC).
+        "utc_offset_minutes": settings.utc_offset_minutes,
         "goals": goals,
         "jobs": jobs,
         "events": externals,
@@ -257,22 +315,24 @@ def inbox_page():
     return FileResponse(_page("inbox.html"))
 
 
-app.mount("/static", StaticFiles(directory=_asset_dir()), name="static")
+# Only mount the built bundle. Mounting ``web/`` when there is no build would
+# expose package.json / package-lock.json / node_modules over HTTP.
+if DIST_DIR.exists():
+    app.mount("/static", StaticFiles(directory=DIST_DIR), name="static")
 
 # Serve hashed Vite build assets at /assets/ (production build path).
 _ASSETS_DIR = DIST_DIR / "assets"
 if _ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
-
-
 # --------------------------------------------------------------------------- calendar
 
 @app.get("/api/events")
 def list_events(from_: str | None = Query(None, alias="from"), to: str | None = Query(None, alias="to")):
     conn = _get_conn()
     try:
-        events = db.list_events(conn, from_, to)
-        jobs = {j["event_id"]: j for j in db.list_jobs(conn, from_, to)}
+        start, stop = _window_bound(from_, end=False), _window_bound(to, end=True)
+        events = db.list_events(conn, start, stop)
+        jobs = {j["event_id"]: j for j in db.list_jobs(conn, start, stop)}
         materials = {m["id"]: m for m in db.list_materials(conn)}
         enriched = []
         for e in events:
@@ -396,7 +456,7 @@ def replan_goal(goal_id: str):
 def list_jobs(from_: str | None = Query(None, alias="from"), to: str | None = Query(None, alias="to")):
     conn = _get_conn()
     try:
-        jobs = db.list_jobs(conn, from_, to)
+        jobs = db.list_jobs(conn, _window_bound(from_, end=False), _window_bound(to, end=True))
         materials = {m["id"]: m for m in db.list_materials(conn)}
         for j in jobs:
             m = materials.get(j["material_id"], {})
@@ -831,6 +891,8 @@ async def chat(request: Request):
         out = {"reply": reply, "llm": llm}
         if result.get("actions"):
             out["actions"] = result["actions"]
+        if result.get("llm_error"):
+            out["llm_error"] = result["llm_error"]
         return out
     finally:
         conn.close()
@@ -843,6 +905,45 @@ def list_chat_messages_endpoint():
         return db.list_chat_messages(conn)
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- llm diagnostics
+
+def _llm_client_from_settings(conn) -> llm_mod.LLMClient:
+    return llm_mod.LLMClient(parse_settings(db.list_settings(conn)))
+
+
+@app.get("/api/llm/status")
+def llm_status():
+    """What the app thinks the LLM configuration is, plus the last failure."""
+    conn = _get_conn()
+    try:
+        settings = parse_settings(db.list_settings(conn))
+        return {
+            "configured": settings.llm_enabled,
+            "model": settings.llm_model,
+            "base_url": settings.llm_base_url,
+            "api_key_set": bool(settings.llm_api_key),
+            "last_error": llm_mod.last_error(),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/llm/test")
+def llm_test():
+    """Send one tiny completion to the configured endpoint (diagnostic).
+
+    Always 200 with ``{ok: bool, ...}``: a failure here is an answer, not a
+    server error. ``kind`` is one of auth | not_found | connection | timeout |
+    http_error | bad_request | rate_limit | bad_config | not_configured | unknown.
+    """
+    conn = _get_conn()
+    try:
+        client = _llm_client_from_settings(conn)
+    finally:
+        conn.close()
+    return client.check_connection()
 
 
 # --------------------------------------------------------------------------- stats
@@ -995,25 +1096,25 @@ def _validate_ocr_min_chars(value: Any) -> int:
 _SENSITIVE_SETTING_KEYS = {"llm_api_key", "cf_api_token"}
 
 
+def _public_setting(row: dict[str, Any]) -> dict[str, Any]:
+    """One settings row as the API may expose it (credentials stay write-only)."""
+    item = dict(row)
+    if item["key"] in _SENSITIVE_SETTING_KEYS:
+        item["configured"] = bool(_decode_setting(item["value"]))
+        item["value"] = ""
+    else:
+        try:
+            item["value"] = json.loads(item["value"])
+        except (json.JSONDecodeError, TypeError):
+            pass  # leave the raw string
+    return item
+
+
 @app.get("/api/settings")
 def get_settings():
     conn = _get_conn()
     try:
-        rows = db.list_settings(conn)
-        out = []
-        for row in rows:
-            item = dict(row)
-            if item["key"] in _SENSITIVE_SETTING_KEYS:
-                configured = bool(_decode_setting(item["value"]))
-                item["value"] = ""
-                item["configured"] = configured
-            else:
-                try:
-                    item["value"] = json.loads(item["value"])
-                except (json.JSONDecodeError, TypeError):
-                    pass  # leave raw string
-            out.append(item)
-        return out
+        return [_public_setting(row) for row in db.list_settings(conn)]
     finally:
         conn.close()
 
@@ -1034,12 +1135,20 @@ async def put_settings(request: Request):
             parsed[key] = validate_effort_hours(_as_float(value, key))
         elif key == "revision_intervals_days":
             parsed[key] = _validate_revision_intervals_days(value)
+        elif key == "utc_offset_minutes":
+            parsed[key] = validate_utc_offset_minutes(_as_int(value, key))
+        elif key == "llm_base_url":
+            parsed[key] = validate_llm_base_url(str(value))
+        elif key == "llm_model":
+            parsed[key] = validate_llm_model(str(value))
+        elif key == "llm_api_key":
+            parsed[key] = str(value or "").strip()
         elif key == "ocr_provider":
             parsed[key] = _validate_ocr_provider(value)
         elif key == "ocr_min_chars":
             parsed[key] = _validate_ocr_min_chars(value)
         else:
-            # Unknown keys (e.g. llm_* endpoint config) are stored as-is.
+            # Unknown keys (e.g. cf_* credentials) are stored as-is.
             parsed[key] = value
     conn = _get_conn()
     try:
@@ -1048,7 +1157,14 @@ async def put_settings(request: Request):
                 db.update_setting(conn, k, json.dumps(v), "user")
                 for k, v in parsed.items()
             ]
-        return updated
+            settings = parse_settings(db.list_settings(conn))
+            # A shorter/longer study window changes the plan: recompute now so
+            # the calendar never shows jobs outside the configured capacity.
+            for goal in db.list_goals(conn):
+                if goal["status"] == "open":
+                    engine.replan(conn, goal["id"], _now_utc())
+        _ = settings  # parsed to validate the stored configuration
+        return [_public_setting(row) for row in updated]
     finally:
         conn.close()
 

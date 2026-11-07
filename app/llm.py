@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from openai import OpenAI
@@ -29,6 +30,44 @@ except Exception:  # pragma: no cover - tools module always present
 
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*", re.IGNORECASE)
+
+#: Last LLM failure seen by this process. Surfaced to the client so a configured
+#: but broken endpoint is distinguishable from "no endpoint configured".
+_LAST_ERROR: dict[str, Any] | None = None
+
+
+def _record_error(skill: str, exc: BaseException) -> dict[str, Any]:
+    """Remember the most recent LLM failure (never raised to the caller)."""
+    global _LAST_ERROR
+    message = str(exc).strip() or exc.__class__.__name__
+    info = {"skill": skill, "message": message[:300]}
+    _LAST_ERROR = {**info, "at": _now_utc()}
+    return info
+
+
+def last_error() -> dict[str, Any] | None:
+    return dict(_LAST_ERROR) if _LAST_ERROR else None
+
+
+def clear_last_error() -> None:
+    global _LAST_ERROR
+    _LAST_ERROR = None
+
+
+def _error_kind(exc: BaseException) -> str:
+    """Classify a client failure for the UI (auth / connection / timeout / ...)."""
+    name = exc.__class__.__name__
+    known = {
+        "AuthenticationError": "auth",
+        "PermissionDeniedError": "auth",
+        "NotFoundError": "not_found",
+        "APIConnectionError": "connection",
+        "APITimeoutError": "timeout",
+        "BadRequestError": "bad_request",
+        "RateLimitError": "rate_limit",
+        "APIStatusError": "http_error",
+    }
+    return known.get(name, "unknown")
 
 # Chat keywords that indicate the user is asking about the calendar schedule.
 _SCHEDULE_KEYWORDS = (
@@ -57,15 +96,16 @@ def extract_json(text: str) -> dict[str, Any]:
     return obj
 
 
-def _fmt_slot(iso: str) -> str:
-    """Format an ISO-8601 UTC slot as ``Mon 09 Nov 14:00``."""
+def _fmt_slot(iso: str, offset_minutes: int = 0) -> str:
+    """Format a stored UTC slot in the user's local clock: ``Mon 09 Nov 14:00``."""
     s = iso.strip()
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%a %d %b %H:%M")
+    local = dt.astimezone(timezone.utc) + timedelta(minutes=offset_minutes)
+    return local.strftime("%a %d %b %H:%M")
 
 
 def _now_utc() -> str:
@@ -101,14 +141,61 @@ class LLMClient:
                 return None
         return self._client
 
+    # ---------------------------------------------------------- diagnostics
+
+    def check_connection(self, *, timeout: float = 15.0) -> dict[str, Any]:
+        """Round-trip the configured endpoint with a tiny completion.
+
+        Read-only, bounded, and never raises: the settings modal uses it to tell
+        "configured and working" apart from "configured but unreachable".
+        """
+        if not self.settings.llm_enabled:
+            return {
+                "ok": False,
+                "kind": "not_configured",
+                "error": "no LLM endpoint configured (base URL + model are required)",
+            }
+        client = self.client
+        if client is None:
+            return {"ok": False, "kind": "bad_config", "error": "could not build the LLM client"}
+        started = time.monotonic()
+        try:
+            # No retries for a diagnostic: a dead endpoint should answer in
+            # well under a second instead of backing off three times.
+            completions = client.chat.completions.with_options(
+                max_retries=0, timeout=timeout
+            )
+            resp = completions.create(
+                model=self.settings.llm_model,
+                messages=[{"role": "user", "content": "Reply with the single word: pong"}],
+                max_tokens=8,
+                temperature=0,
+            )
+            text = (resp.choices[0].message.content or "").strip()
+            clear_last_error()
+            return {
+                "ok": True,
+                "model": self.settings.llm_model,
+                "reply": text[:120],
+                "latency_ms": int((time.monotonic() - started) * 1000),
+            }
+        except Exception as exc:  # any failure is a diagnostic result, not a crash
+            info = _record_error("test", exc)
+            return {
+                "ok": False,
+                "kind": _error_kind(exc),
+                **info,
+                "latency_ms": int((time.monotonic() - started) * 1000),
+            }
+
     # ---------------------------------------------------------------- tag
 
     def tag(self, *, markdown: str, filename: str) -> dict[str, Any]:
         if self.client is not None:
             try:
                 return self._tag_llm(markdown=markdown, filename=filename)
-            except Exception:  # pragma: no cover - network/LLM failure
-                pass
+            except Exception as exc:  # network/LLM failure -> offline path
+                _record_error("tag", exc)
         return self._tag_fallback(filename=filename)
 
     def _tag_llm(self, *, markdown: str, filename: str) -> dict[str, Any]:
@@ -169,8 +256,8 @@ class LLMClient:
                     topic_name=topic_name,
                     effort_hours=effort_hours,
                 )
-            except Exception:  # pragma: no cover - network/LLM failure
-                pass
+            except Exception as exc:  # network/LLM failure -> offline path
+                _record_error("cluster", exc)
         return self._cluster_fallback(content_hash=content_hash, filename=filename)
 
     def _cluster_llm(
@@ -235,9 +322,11 @@ class LLMClient:
         conn: Any = None,
         now_iso: str | None = None,
     ) -> dict[str, Any]:
+        error: dict[str, Any] | None = None
         if self.client is not None:
-            try:
-                if conn is not None and _TOOLS_OK:
+            # 1) full tool loop when a DB connection is available
+            if conn is not None and _TOOLS_OK:
+                try:
                     return self._chat_llm_tools(
                         message=message,
                         history=history,
@@ -245,10 +334,21 @@ class LLMClient:
                         conn=conn,
                         now_iso=now_iso or _now_utc(),
                     )
-                return self._chat_llm(message=message, history=history, context=context)
-            except Exception:  # pragma: no cover - network/LLM failure
-                pass
-        return self._chat_fallback(message=message, context=context)
+                except Exception as exc:  # e.g. endpoint without tool support
+                    error = _record_error("chat", exc)
+            # 2) plain chat: works with endpoints that do not support tools
+            try:
+                out = self._chat_llm(message=message, history=history, context=context)
+                clear_last_error()
+                return out
+            except Exception as exc:  # network/LLM failure -> offline reply
+                error = _record_error("chat", exc)
+        out = self._chat_fallback(message=message, context=context)
+        if error is not None:
+            # The reply is still useful, but the client must be able to tell
+            # that the configured endpoint failed (docs/API.md).
+            out["llm_error"] = error
+        return out
 
     def _chat_llm(
         self, *, message: str, history: list[dict[str, str]], context: dict[str, Any] | None = None
@@ -342,6 +442,7 @@ class LLMClient:
         'LLM not configured'."""
         msg = message.lower()
         context = context or {}
+        offset = int(context.get("utc_offset_minutes") or 0)
         jobs = context.get("jobs", []) or []
         events = context.get("events", []) or []
         materials = context.get("materials", []) or []
@@ -360,7 +461,7 @@ class LLMClient:
             items = items[:8]
             if items:
                 lines = [
-                    f"{_fmt_slot(s)}–{_fmt_slot(e)} — {title} ({kind})"
+                    f"{_fmt_slot(s, offset)}–{_fmt_slot(e, offset)[-5:]} — {title} ({kind})"
                     for s, e, title, kind in items
                 ]
                 return {"reply": "Here's what's coming up:\n" + "\n".join(lines), "llm": "off"}
@@ -397,8 +498,8 @@ class LLMClient:
         if self.client is not None:
             try:
                 return self._tune_llm(context=context)
-            except Exception:  # pragma: no cover - network/LLM failure
-                pass
+            except Exception as exc:  # network/LLM failure -> offline no-op
+                _record_error("tune_settings", exc)
         return {}  # offline: no-op, settings keep current values
 
     def _tune_llm(self, *, context: str) -> dict[str, Any]:

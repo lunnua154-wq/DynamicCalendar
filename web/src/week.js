@@ -6,7 +6,7 @@ import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/timegrid";
 import "../tailwind.css";
-import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings } from "./common.js";
+import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings, localDateString } from "./common.js";
 
 const calendarEl = document.getElementById("week-calendar");
 const rangeEl = document.getElementById("week-range");
@@ -37,8 +37,10 @@ const jobCbById = new Map();
 const today = new Date();
 today.setHours(0, 0, 0, 0);
 
+// Local calendar day (never toISOString: it shifts by the UTC offset and drops
+// the first/last day of the visible week).
 function isoDate(d) {
-  return d.toISOString().slice(0, 10);
+  return localDateString(d);
 }
 
 // ISO seconds, no milliseconds: YYYY-MM-DDTHH:MM:SSZ
@@ -123,12 +125,18 @@ async function loadEvents() {
     calendar.removeAllEvents();
     jobCbById.clear();
     events.forEach((e) => {
+      const draggable = e.kind !== "external";
       calendar.addEvent({
         id: e.id,
         title: e.title,
         start: e.dtstart,
         end: e.dtend,
         allDay: e.all_day === 1,
+        // External events are fixed: no drag, no resize (AGENTS.md #2). The
+        // per-event flags are what FullCalendar honours — a global
+        // `eventEditable` option does not exist (it logged a warning).
+        startEditable: draggable,
+        durationEditable: draggable,
         extendedProps: {
           kind: e.kind,
           venue: e.venue || "",
@@ -141,7 +149,9 @@ async function loadEvents() {
     setText(rangeEl, `${utcDay(view.currentStart)} – ${utcDay(view.currentEnd)}`);
     await updateProgress(events);
     const empty = events.length === 0;
-    weekEmpty.classList.toggle("hidden", !isMobile || empty);
+    // The empty state is page-level, not mobile-only: on desktop an empty week
+    // used to show a blank grid with no explanation.
+    weekEmpty.classList.toggle("hidden", !empty);
     if (isMobile) renderMobileList();
   } catch (err) {
     toast("Failed to load week: " + err.message, "error");
@@ -304,8 +314,7 @@ function openPopover(job, anchorRect, fcEvent) {
   popover.appendChild(actions);
 
   popover.style.left = Math.max(8, anchorRect.left) + "px";
-  popover.style.top = Math.min(anchorRect.bottom + 6, window.innerHeight - 260) + "px";
-}
+  popover.style.top = Math.min(anchorRect.bottom + 6, window.innerHeight - 260) + "px";}
 
 function closePopover() {
   popover.classList.toggle("hidden", true);
@@ -400,6 +409,8 @@ calendar = new Calendar(calendarEl, {
   plugins: [timeGridPlugin, interactionPlugin],
   initialView: "timeGridWeek",
   slotDuration: "00:30:00",
+  slotLabelInterval: "01:00",
+  slotLabelFormat: { hour: "2-digit", minute: "2-digit", hour12: false },
   slotMinTime: "08:00:00",
   slotMaxTime: "22:00:00",
   height: "auto",
@@ -408,13 +419,11 @@ calendar = new Calendar(calendarEl, {
   allDaySlot: true,
   headerToolbar: false,
   editable: true,
-  today: isoDate(new Date()),
-  eventEditable: (info) => info.event.extendedProps.kind !== "external",
   // Today column tint (dayHeaderClassNames / dayCellClassNames).
   dayHeaderClassNames: (arg) => (isSameDay(arg.date, today) ? ["bg-blue-50 font-bold text-blue-700"] : []),
   dayCellClassNames: (arg) => (isSameDay(arg.date, today) ? ["bg-blue-50/50"] : []),
   eventDragStart: (info) => {
-    if (info.event.extendedProps.kind === "external") return false;
+    if (info.event.extendedProps.kind === "external") return;
     const job = info.event.extendedProps.job;
     draggedJobId = job ? job.id : null;
     draggedDuration = job && job.duration_min ? job.duration_min : 50;
@@ -446,7 +455,9 @@ calendar = new Calendar(calendarEl, {
       return;
     }
     const rect = info.jsEvent
-      ? { left: info.jsEvent.pageX, top: info.jsEvent.pageY, bottom: info.jsEvent.pageY, width: 0 }
+      ? // The popover is position:fixed, so it needs viewport coordinates
+        // (clientX/clientY); pageX/pageY drift once the page is scrolled.
+        { left: info.jsEvent.clientX, top: info.jsEvent.clientY, bottom: info.jsEvent.clientY, width: 0 }
       : { left: 100, top: 100, bottom: 120, width: 0 };
     openPopover(job, rect, info.event);
   },
