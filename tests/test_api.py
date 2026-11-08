@@ -3,6 +3,7 @@
 import os
 import shutil
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -925,13 +926,17 @@ def test_settings_full_validation():
 def test_stats_with_past_jobs_returns_200():
     """Regression: stats 500'd once any job existed before today (by_day KeyError)."""
     path = _temp_db()
+    # Relative to the API's own clock: /api/stats buckets only the trailing 13
+    # days, so a hard-coded date drops out of the window as the calendar moves
+    # and the test fails for a reason that has nothing to do with the bug.
+    past_day = (datetime.now(timezone.utc) - timedelta(days=5)).date().isoformat()
     gid, mid, jid = _seed_goal_material_job(
         path,
-        slot_start="2026-10-25T09:00:00Z",
-        slot_end="2026-10-25T09:50:00Z",
+        slot_start=f"{past_day}T09:00:00Z",
+        slot_end=f"{past_day}T09:50:00Z",
     )
     conn = db.connect(path)
-    db.update_job(conn, jid, status="done", done_at="2026-10-25T09:55:00Z")
+    db.update_job(conn, jid, status="done", done_at=f"{past_day}T09:55:00Z")
     conn.commit()
     conn.close()
     c = _client_at(path)
