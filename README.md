@@ -57,6 +57,21 @@ every LLM skill falls back to a deterministic path.
 - Docker: `docker compose up --build` (Docker Desktop daemon must be running)
 - Tests: `pytest -q`
 
+## Reset local state (temporary)
+
+Until a proper reset script exists, wipe the local demo state by hand:
+
+```bash
+rm -rf data/dynacalendar.db data/materials data/_test
+```
+
+then restart `python -m app.main`. The schema is re-created automatically; run
+`python scripts/seed.py` to re-seed the demo data.
+
+> **Irreversible** — this deletes all goals, jobs, imported events, chat history and
+> uploaded materials. If you run with `DYNACALENDAR_DB` set, clear that path instead;
+> `data/` is gitignored either way.
+
 ## Offline-first LLM
 
 With no LLM endpoint configured, every LLM skill (tag, cluster, chat, tune_settings) falls back to a deterministic path, so chat and file tagging work without any API key. Configure `llm_base_url` / `llm_model` (and optional `llm_api_key`) in Settings to point at any OpenAI-compatible endpoint (OpenAI, Cloudflare Workers AI, Ollama…).
