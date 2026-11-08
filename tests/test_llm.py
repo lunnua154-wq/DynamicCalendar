@@ -58,7 +58,7 @@ def test_tag_offline_fallback():
     c = LLMClient(_settings(llm_enabled=False))
     out = c.tag(markdown="# Limits chapter", filename="limits.pdf")
     assert out["tags"] == ["limits"]
-    assert out["effort_hours"] == 1.0
+    assert out["effort_hours"] == 0.5
     assert "limits.pdf" in out["summary"]
 
 
@@ -69,7 +69,8 @@ def test_tag_mocked_happy_path():
     ].message.content = '{"summary":"Limits","tags":["math"],"effort_hours":3.0}'
     c = LLMClient(_settings(llm_enabled=True))
     c._client = fake
-    out = c.tag(markdown="# Limits", filename="limits.pdf")
+    markdown = "lorem ipsum dolor sit amet " * 360  # 1800 words -> baseline 3.0h, band [1.5, 4.5]
+    out = c.tag(markdown=markdown, filename="limits.pdf")
     assert out["summary"] == "Limits"
     assert out["tags"] == ["math"]
     assert out["effort_hours"] == 3.0
@@ -85,7 +86,8 @@ def test_tag_fenced_json_parses():
     )
     c = LLMClient(_settings(llm_enabled=True))
     c._client = fake
-    out = c.tag(markdown="# Limits", filename="limits.pdf")
+    markdown = "lorem ipsum dolor sit amet " * 360  # 1800 words -> baseline 3.0h, band [1.5, 4.5]
+    out = c.tag(markdown=markdown, filename="limits.pdf")
     assert out["summary"] == "Limits"
     assert out["tags"] == ["math"]
     assert out["effort_hours"] == 3.0
@@ -100,6 +102,36 @@ def test_tag_garbage_output_falls_back():
     c._client = fake
     out = c.tag(markdown="# Limits", filename="limits.pdf")
     assert out["tags"] == ["limits"]
+    assert out["effort_hours"] == 0.5
+
+
+def test_tag_llm_estimate_clamped_to_band():
+    fake = MagicMock()
+    fake.chat.completions.create.return_value.choices[
+        0
+    ].message.content = '{"summary":"S","tags":["t"],"effort_hours":18.0}'
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    markdown = "word " * 600  # 600 words -> baseline 1.0h, band [0.5, 1.5]
+    out = c.tag(markdown=markdown, filename="x.md")
+    assert out["effort_hours"] == 1.5
+
+
+def test_tag_llm_missing_effort_uses_baseline():
+    fake = MagicMock()
+    fake.chat.completions.create.return_value.choices[
+        0
+    ].message.content = '{"summary":"S","tags":["t"]}'
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = fake
+    markdown = "word " * 600  # 600 words -> baseline 1.0h
+    out = c.tag(markdown=markdown, filename="x.md")
+    assert out["effort_hours"] == 1.0
+
+
+def test_tag_empty_markdown_uses_default_effort():
+    c = LLMClient(_settings(llm_enabled=False))
+    out = c.tag(markdown="", filename="empty.md")
     assert out["effort_hours"] == 1.0
 
 

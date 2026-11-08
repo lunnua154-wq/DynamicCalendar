@@ -19,7 +19,13 @@ from typing import Any
 
 from openai import OpenAI
 
-from .config import Settings, validate_capacity_hours, validate_effort_hours, validate_slot_minutes
+from .config import (
+    EFFORT_HOURS_MAX,
+    EFFORT_HOURS_MIN,
+    Settings,
+    validate_capacity_hours,
+    validate_slot_minutes,
+)
 try:
     from .tools import dispatch, tool_specs
     _TOOLS_OK = True
@@ -30,6 +36,23 @@ except Exception:  # pragma: no cover - tools module always present
 
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*", re.IGNORECASE)
+
+#: Deterministic effort baseline: ~200 wpm reading with review/practice passes.
+_EFFORT_WORDS_PER_HOUR = 600
+_EFFORT_MIN_HOURS = 0.5
+
+
+def _effort_baseline_hours(markdown: str) -> float | None:
+    """Size-based effort estimate in hours, clamped to [EFFORT_HOURS_MIN, EFFORT_HOURS_MAX].
+
+    Returns None for empty markdown so callers can fall back to settings.
+    """
+    words = len(markdown.split())
+    if words == 0:
+        return None
+    hours = words / _EFFORT_WORDS_PER_HOUR
+    return round(min(EFFORT_HOURS_MAX, max(_EFFORT_MIN_HOURS, hours)), 2)
+
 
 #: Last LLM failure seen by this process. Surfaced to the client so a configured
 #: but broken endpoint is distinguishable from "no endpoint configured".
@@ -191,21 +214,34 @@ class LLMClient:
     # ---------------------------------------------------------------- tag
 
     def tag(self, *, markdown: str, filename: str) -> dict[str, Any]:
+        baseline = _effort_baseline_hours(markdown)
         if self.client is not None:
             try:
-                return self._tag_llm(markdown=markdown, filename=filename)
+                return self._tag_llm(markdown=markdown, filename=filename, baseline=baseline)
             except Exception as exc:  # network/LLM failure -> offline path
                 _record_error("tag", exc)
-        return self._tag_fallback(filename=filename)
+        return self._tag_fallback(filename=filename, baseline=baseline)
 
-    def _tag_llm(self, *, markdown: str, filename: str) -> dict[str, Any]:
+    def _tag_llm(
+        self, *, markdown: str, filename: str, baseline: float | None = None
+    ) -> dict[str, Any]:
         stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+        words = len(markdown.split())
+        base = (
+            baseline
+            if baseline is not None
+            else float(self.settings.default_effort_hours or 1.0)
+        )
+        lo = round(max(EFFORT_HOURS_MIN, base * 0.5), 2)
+        hi = round(min(EFFORT_HOURS_MAX, base * 1.5), 2)
         prompt = (
             "You tag study material. Reply with one JSON object and nothing else, "
             "using plain values (no angle brackets or placeholders). Example:\n"
             '{"summary": "One sentence describing the material.", '
             '"tags": ["photosynthesis", "biology"], "effort_hours": 1.5}\n'
-            "effort_hours must be a number between 0.1 and 20.\n"
+            f"The material is ~{words} words. A deterministic size-based estimate "
+            f"is {base:.2f} hours (reading + review). Estimate the effort to LEARN "
+            f"it; effort_hours must be a number between {lo} and {hi}.\n"
             f"Material filename: {filename}\n\n{markdown[:4000]}"
         )
         resp = self.client.chat.completions.create(  # type: ignore[union-attr]
@@ -214,18 +250,32 @@ class LLMClient:
             temperature=0,
         )
         data = extract_json(resp.choices[0].message.content or "{}")
+        raw = data.get("effort_hours")
+        effort: float | None = None
+        try:
+            effort = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            effort = None
+        if effort is None:
+            effort = base
+        effort = min(max(effort, lo), hi)
+        effort = round(min(max(effort, EFFORT_HOURS_MIN), EFFORT_HOURS_MAX), 2)
         return {
             "summary": str(data.get("summary", stem))[:500],
             "tags": [str(t) for t in (data.get("tags") or [stem])][:5],
-            "effort_hours": validate_effort_hours(float(data.get("effort_hours") or 1.0)),
+            "effort_hours": effort,
         }
 
-    def _tag_fallback(self, *, filename: str) -> dict[str, Any]:
+    def _tag_fallback(
+        self, *, filename: str, baseline: float | None = None
+    ) -> dict[str, Any]:
         stem = filename.rsplit(".", 1)[0] if "." in filename else filename
         return {
             "summary": f"Material imported from {filename}.",
             "tags": [stem],
-            "effort_hours": self.settings.default_effort_hours,
+            "effort_hours": (
+                baseline if baseline is not None else self.settings.default_effort_hours
+            ),
         }
 
     # ------------------------------------------------------------- cluster
