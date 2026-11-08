@@ -104,3 +104,30 @@ def test_reimport_repairs_wrong_all_day(conn):
     events = db.list_events(c)
     timed = [e for e in events if e["title"] != "Library books due"]
     assert timed and all(e["all_day"] == 0 for e in timed)
+
+
+def test_exam_detected_by_title_without_category(conn):
+    ics = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n"
+        "BEGIN:VEVENT\r\nUID:exam-by-title@example.com\r\n"
+        "DTSTAMP:20261101T000000Z\r\nDTSTART:20261218T010000Z\r\n"
+        "DTEND:20261218T040000Z\r\nSUMMARY:MATH2001 Final Exam\r\n"
+        "CATEGORIES:MATH2001\r\nEND:VEVENT\r\n"
+        "BEGIN:VEVENT\r\nUID:example-class@example.com\r\n"
+        "DTSTAMP:20261101T000000Z\r\nDTSTART:20261219T010000Z\r\n"
+        "DTEND:20261219T020000Z\r\nSUMMARY:Example walkthrough lecture\r\n"
+        "END:VEVENT\r\nEND:VCALENDAR\r\n"
+    ).encode()
+
+    class FakeUpload:
+        def __init__(self, data):
+            self._data = data
+            self.name = "bytitle.ics"
+
+        def read(self):
+            return self._data
+
+    c, path = conn
+    r = ics_sync.import_ics(FakeUpload(ics), db_path=path)
+    assert r["exams_found"] == ["MATH2001 Final Exam"], r
+    assert r["exams"][0]["title"] == "MATH2001 Final Exam"

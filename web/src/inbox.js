@@ -15,6 +15,7 @@ const dropZone = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
 const btnBrowse = document.getElementById("btn-browse");
 const fileList = document.getElementById("file-list");
+const attachBanner = document.getElementById("attach-banner");
 const topicsStrip = document.getElementById("topics-strip");
 const btnSettings = document.getElementById("btn-settings");
 
@@ -25,6 +26,7 @@ let topics = []; // {id, name, file_count, members: [{filename}]}
 function chip(text, kind) {
   const map = {
     ready: "bg-emerald-100 text-emerald-700",
+    unattached: "bg-amber-100 text-amber-800",
     duplicate: "bg-amber-100 text-amber-700",
     superseded: "bg-slate-100 text-slate-500",
     error: "bg-rose-100 text-rose-700",
@@ -40,7 +42,7 @@ function appendChat(role, content) {
   const div = document.createElement("div");
   div.className = `flex ${role === "user" ? "justify-end" : "justify-start"}`;
   const bubble = document.createElement("div");
-  bubble.className = `max-w-[80%] p-3 rounded-2xl text-sm ${
+  bubble.className = `max-w-[80%] p-3 rounded-2xl text-sm whitespace-pre-wrap break-words ${
     role === "user"
       ? "bg-blue-600 text-white rounded-tr-none"
       : "bg-slate-200 text-slate-800 rounded-tl-none"
@@ -211,12 +213,14 @@ chatInput.onkeydown = (e) => {
 };
 
 btnNewGoal.onclick = createGoal;
+goalSelect.addEventListener("change", () => renderFiles());
 newGoalTitle.onkeydown = (e) => {
   if (e.key === "Enter") createGoal();
 };
 
 async function loadGoals() {
   try {
+    const prev = goalSelect.value;
     const goals = await api("goals");
     goalSelect.innerHTML = '<option value="">Unattached</option>';
     goals.forEach((g) => {
@@ -225,6 +229,14 @@ async function loadGoals() {
       o.textContent = g.title;
       goalSelect.appendChild(o);
     });
+    // Keep the user's current selection if it survived the rebuild, else
+    // pre-select the first open goal so drops land attached by default.
+    if (prev && [...goalSelect.options].some((o) => o.value === prev)) {
+      goalSelect.value = prev;
+      return;
+    }
+    const firstOpen = goals.find((g) => g.status === "open");
+    if (firstOpen) goalSelect.value = String(firstOpen.id);
   } catch (err) {
     toast("Failed to load goals: " + err.message, "error");
   }
@@ -272,11 +284,16 @@ async function uploadFiles(files) {
   try {
     const results = await api("inbox/upload", { method: "POST", body: form });
     const rows = results || [];
+    const attached = rows.filter((r) => r.status === "ready").length;
     const lines = rows.map(humanResult);
     let extra = "";
     if (goalSelect.value) {
       const sel = goalSelect.options[goalSelect.selectedIndex];
-      extra = ` Jobs scheduled for goal "${sel.textContent}".`;
+      if (attached > 0) {
+        extra = ` Attached ${attached} ready file(s) to goal "${sel.textContent}".`;
+      } else {
+        extra = ' Nothing attached — see the list (duplicates/errors are not scheduled).';
+      }
     }
     toast(`${rows.length} file(s) uploaded.${extra} ${lines.join("; ")}`, "success");
     refreshFiles();
@@ -324,8 +341,45 @@ function startPolling() {
   }
 }
 
+async function attachAllReady() {
+  const goal_id = goalSelect.value;
+  if (!goal_id) return;
+  const sel = goalSelect.options[goalSelect.selectedIndex];
+  try {
+    const res = await api("inbox/attach_ready", { method: "POST", body: { goal_id } });
+    toast(`Attached ${res.attached} ready file(s) to "${sel.textContent}".`, "success");
+    refreshFiles();
+  } catch (err) {
+    toast("Attach failed: " + err.message, "error");
+  }
+}
+
+function updateAttachBanner() {
+  const unattached = materials.filter((m) => m.status === "ready" && !m.goal_id);
+  attachBanner.textContent = "";
+  if (unattached.length === 0) {
+    attachBanner.classList.add("hidden");
+    return;
+  }
+  const msg = document.createElement("span");
+  msg.textContent =
+    `${unattached.length} ready file(s) aren't attached to a goal — they won't be scheduled.`;
+  attachBanner.appendChild(msg);
+  const goalId = goalSelect.value;
+  if (goalId) {
+    const sel = goalSelect.options[goalSelect.selectedIndex];
+    const btn = document.createElement("button");
+    btn.className = "ml-auto underline text-blue-700 hover:text-blue-900 shrink-0";
+    btn.textContent = `Attach all to "${sel.textContent}"`;
+    btn.onclick = attachAllReady;
+    attachBanner.appendChild(btn);
+  }
+  attachBanner.classList.remove("hidden");
+}
+
 function renderFiles() {
   fileList.innerHTML = "";
+  updateAttachBanner();
   if (materials.length === 0) {
     fileList.textContent = "No files yet. Drop some in.";
     return;
@@ -341,8 +395,11 @@ function renderFiles() {
     name.textContent = m.filename;
     left.appendChild(name);
     const statusBar = document.createElement("div");
-    statusBar.className = "flex items-center gap-3 mt-1 text-xs";
+    statusBar.className = "flex items-center gap-3 mt-1 text-xs flex-wrap";
     statusBar.appendChild(chip(m.status, m.status));
+    if (m.status === "ready" && !m.goal_id) {
+      statusBar.appendChild(chip("unattached", "unattached"));
+    }
     if (m.status_reason) {
       const reason = document.createElement("span");
       reason.className = "text-[10px] text-slate-400";
@@ -351,14 +408,14 @@ function renderFiles() {
     }
     if (m.summary) {
       const s = document.createElement("span");
-      s.className = "text-slate-500 truncate";
+      s.className = "text-slate-500 truncate min-w-0";
       s.textContent = m.summary;
       statusBar.appendChild(s);
     }
     left.appendChild(statusBar);
     if (m.tags && m.tags.length) {
       const tagsRow = document.createElement("div");
-      tagsRow.className = "flex gap-1 mt-1";
+      tagsRow.className = "flex flex-wrap gap-1 mt-1";
       m.tags.forEach((t) => {
         const tag = document.createElement("span");
         tag.className = "text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded";

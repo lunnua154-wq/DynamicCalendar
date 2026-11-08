@@ -152,10 +152,16 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
     (`new topic "X"` · `duplicate of Y` · `version update of Y`), tags as small chips,
     effort with inline edit (number, hours), row actions: `[Dismiss]` (mark duplicate/
     superseded — user override) `[Open]`.
+  - A `ready` row with no goal shows an amber `unattached` chip — without one it is
+    invisible on the calendar (jobs are only scheduled for goal-attached materials).
+  - An amber banner above the file list counts ready+unattached files and offers
+    one-click **Attach all to "<selected goal>"** (`POST /api/inbox/attach_ready`,
+    single replan).
   - Status updates: poll `GET /api/inbox/files` every 2 s while any row is `processing`
     (stop when all settle).
-- **Goal selector** (top-right): materials dropped while a goal is selected attach to it;
-  `Unattached` is a valid state — shown as a chip on the row.
+- **Goal selector** (top-right): the dropdown pre-selects the first open goal (drops
+  land attached by default); `Unattached` is a valid state — pick it explicitly if you
+  want to stash materials without scheduling; shown as a chip on the row.
   - Beside it, a title + deadline input and `New goal` button create a goal via
     `POST /api/goals` (deadline required) and select it in the selector.
 - **Topics strip** (bottom): each topic = name + file count + actions `[merge ▾]` `[rename]`;

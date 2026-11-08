@@ -581,70 +581,89 @@ async def inbox_upload(
         ready_material_ids = []
         for upload in files:
             filename = upload.filename or "untitled"
-            raw = await upload.read()
-            stored = ingest.store_upload(
-                conn,
-                raw=raw,
-                filename=filename,
-                goal_id=None,  # attach to goal only after a file is ready
-                originals_dir=materials_dir,
-            )
-            if stored["status"] == "duplicate":
-                material = db.get_material(conn, stored["material_id"])
-                topic_name = None
-                if material["topic_id"]:
-                    row = conn.execute(
-                        "SELECT name FROM topics WHERE id = ?", (material["topic_id"],)
-                    ).fetchone()
-                    topic_name = row["name"] if row else None
+            try:
+                raw = await upload.read()
+                stored = ingest.store_upload(
+                    conn,
+                    raw=raw,
+                    filename=filename,
+                    goal_id=None,  # attach to goal only after a file is ready
+                    originals_dir=materials_dir,
+                )
+                if stored["status"] == "duplicate":
+                    material = db.get_material(conn, stored["material_id"])
+                    topic_name = None
+                    if material["topic_id"]:
+                        row = conn.execute(
+                            "SELECT name FROM topics WHERE id = ?", (material["topic_id"],)
+                        ).fetchone()
+                        topic_name = row["name"] if row else None
+                    results.append(
+                        {
+                            "filename": filename,
+                            "status": "duplicate",
+                            "material_id": stored["material_id"],
+                            "topic_id": material["topic_id"],
+                            "topic_name": topic_name,
+                            "summary": material["summary"],
+                            "tags": (
+                                json.loads(material["tags"]) if material["tags"] else []
+                            ),
+                            "effort_hours": material["effort_hours"],
+                            "duplicate_of": stored["duplicate_of"],
+                            "status_reason": material["status_reason"],
+                            "cluster_relation": "duplicate",
+                            "cluster_reason": "identical content already ingested",
+                        }
+                    )
+                    continue
+
+                material = ingest.process_material(
+                    conn,
+                    stored["material_id"],
+                    markdown_dir=materials_dir,
+                    client=client,
+                    settings=settings,
+                    now_iso=_now_utc(),
+                )
                 results.append(
                     {
-                        "filename": filename,
-                        "status": "duplicate",
-                        "material_id": stored["material_id"],
+                        "filename": material["filename"],
+                        "status": material["status"],
+                        "material_id": material["id"],
                         "topic_id": material["topic_id"],
-                        "topic_name": topic_name,
+                        "topic_name": material.get("topic_name"),
                         "summary": material["summary"],
                         "tags": (
                             json.loads(material["tags"]) if material["tags"] else []
                         ),
                         "effort_hours": material["effort_hours"],
-                        "duplicate_of": stored["duplicate_of"],
+                        "duplicate_of": material["duplicate_of"],
                         "status_reason": material["status_reason"],
-                        "cluster_relation": "duplicate",
-                        "cluster_reason": "identical content already ingested",
+                        "cluster_relation": material.get("cluster_relation", "new"),
+                        "cluster_reason": material.get("cluster_reason", ""),
+                    }
+                )
+                if material["status"] == "ready":
+                    ready_material_ids.append(material["id"])
+            except Exception as exc:
+                results.append(
+                    {
+                        "filename": filename,
+                        "status": "error",
+                        "status_reason": f"upload failed: {exc}"[:300],
+                        "material_id": None,
+                        "topic_id": None,
+                        "topic_name": None,
+                        "summary": None,
+                        "tags": [],
+                        "effort_hours": None,
+                        "duplicate_of": None,
+                        "cluster_relation": "error",
+                        "cluster_reason": str(exc)[:300],
                     }
                 )
                 continue
-
-            material = ingest.process_material(
-                conn,
-                stored["material_id"],
-                markdown_dir=materials_dir,
-                client=client,
-                settings=settings,
-                now_iso=_now_utc(),
-            )
-            results.append(
-                {
-                    "filename": material["filename"],
-                    "status": material["status"],
-                    "material_id": material["id"],
-                    "topic_id": material["topic_id"],
-                    "topic_name": material.get("topic_name"),
-                    "summary": material["summary"],
-                    "tags": (
-                        json.loads(material["tags"]) if material["tags"] else []
-                    ),
-                    "effort_hours": material["effort_hours"],
-                    "duplicate_of": material["duplicate_of"],
-                    "status_reason": material["status_reason"],
-                    "cluster_relation": material.get("cluster_relation", "new"),
-                    "cluster_reason": material.get("cluster_reason", ""),
-                }
-            )
-            if material["status"] == "ready":
-                ready_material_ids.append(material["id"])
 
         if goal_id:
             with conn:
@@ -753,6 +772,34 @@ async def attach_file(material_id: str, request: Request):
             for gid in goals_to_replan:
                 engine.replan(conn, gid, _now_utc())
         return db.get_material(conn, material_id)
+    finally:
+        conn.close()
+
+
+@app.post("/api/inbox/attach_ready")
+async def attach_ready(request: Request):
+    """Bulk-attach every ready, unattached material to ``goal_id``.
+
+    One replan for the goal (not one per file), inside the same transaction.
+    """
+    body = await _read_body(request)
+    goal_id = body.get("goal_id")
+    if not isinstance(goal_id, str) or not goal_id.strip():
+        raise HTTPException(status_code=422, detail="goal_id is required")
+    goal_id = goal_id.strip()
+    conn = _get_conn()
+    try:
+        with conn:
+            db.get_goal(conn, goal_id)  # 404 if missing
+            rows = conn.execute(
+                "SELECT id FROM materials WHERE status = 'ready' AND goal_id IS NULL"
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            for mid in ids:
+                db.update_material(conn, mid, goal_id=goal_id)
+            if ids:
+                engine.replan(conn, goal_id, _now_utc())
+        return {"attached": len(ids), "material_ids": ids, "goal_id": goal_id}
     finally:
         conn.close()
 

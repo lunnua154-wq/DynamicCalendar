@@ -60,11 +60,12 @@ not pin.
 ## Inbox
 | Method & path | Body | Returns |
 |---|---|---|
-| `POST /api/inbox/upload` | multipart `files` (+ optional `goal_id`) | `[{filename, status: 'ready'\|'duplicate'\|'error', material_id, topic_id, topic_name, summary, tags, effort_hours, duplicate_of?, status_reason?, cluster_relation, cluster_reason?}]` — uploads with `goal_id` take one atomic replan after ingest |
+| `POST /api/inbox/upload` | multipart `files` (+ optional `goal_id`) | `[{filename, status: 'ready'\|'duplicate'\|'error', material_id, topic_id, topic_name, summary, tags, effort_hours, duplicate_of?, status_reason?, cluster_relation, cluster_reason?}]` — uploads with `goal_id` take one atomic replan after ingest; a failing file never fails the batch — it is returned as an `error` row |
 | `GET /api/inbox/files` | — | `[{id, filename, summary, tags, effort_hours, status, status_reason, duplicate_of, topic_id, topic_name, goal_id}]` |
 | `POST /api/inbox/files/{id}/dismiss` | `{action: 'duplicate'\|'superseded'\|'new'}` | material row — user override; replans the goal |
 | `POST /api/inbox/files/{id}/effort` | `{hours}` | material row — user override (bounds-validated); replans the goal |
 | `POST /api/inbox/files/{id}/attach` | `{goal_id}` | material row — attach to a goal and replan; **404** if the goal is missing |
+| `POST /api/inbox/attach_ready` | `{"goal_id"}` | `{attached, material_ids, goal_id}` — attaches every `ready` material with no goal and replans **once**; **404** if the goal is missing |
 
 A hash-duplicate creates a distinct `duplicate` material row linked via
 `duplicate_of` (the original keeps its files). Unsupported formats produce a row

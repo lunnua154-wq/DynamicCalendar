@@ -8,6 +8,7 @@ concrete event at its DTSTART (RRULE expansion deferred post-M0).
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import re
 from typing import Any
 
 from icalendar import Calendar
@@ -24,6 +25,8 @@ from .errors import IcsImportError
 
 DEFAULT_DB_PATH = "data/dynacalendar.db"
 HORIZON_DAYS = 30
+
+_EXAM_RE = re.compile(r"\bexam(ination)?s?\b", re.IGNORECASE)
 
 
 def _to_utc(value: Any) -> datetime:
@@ -98,7 +101,8 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
     """Import an .ics file object into the database.
 
     Returns ``{imported, skipped, exams_found}`` where ``exams_found`` lists the
-    titles of events tagged ``EXAM`` (case-insensitive).
+    titles of events that look like exams (an ``EXAM`` category or the word
+    ``exam``/``examination`` in the title, case-insensitive, word-boundary matched).
     """
     conn = connect(db_path)
     try:
@@ -125,7 +129,7 @@ def import_ics(file_obj: Any, db_path: str = DEFAULT_DB_PATH) -> dict[str, Any]:
                     continue
                 for ev in evs:
                     uid = ev["ics_uid"]
-                    is_exam = "exam" in [c.lower() for c in ev["categories"]]
+                    is_exam = bool(_EXAM_RE.search(" ".join(ev["categories"]) + " " + ev["title"]))
                     source = getattr(file_obj, "name", None)
 
                     existing = None
