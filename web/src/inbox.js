@@ -272,11 +272,16 @@ async function uploadFiles(files) {
   try {
     const results = await api("inbox/upload", { method: "POST", body: form });
     const rows = results || [];
+    const attached = rows.filter((r) => r.status === "ready").length;
     const lines = rows.map(humanResult);
     let extra = "";
     if (goalSelect.value) {
       const sel = goalSelect.options[goalSelect.selectedIndex];
-      extra = ` Jobs scheduled for goal "${sel.textContent}".`;
+      if (attached > 0) {
+        extra = ` Attached ${attached} ready file(s) to goal "${sel.textContent}".`;
+      } else {
+        extra = ' Nothing attached — see the list (duplicates/errors are not scheduled).';
+      }
     }
     toast(`${rows.length} file(s) uploaded.${extra} ${lines.join("; ")}`, "success");
     refreshFiles();
