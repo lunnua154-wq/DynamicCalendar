@@ -697,6 +697,54 @@ def test_attach_only_ready_and_replan():
         os.unlink(path)
 
 
+def test_attach_ready_bulk():
+    path = _temp_db()
+    try:
+        conn = db.connect(path)
+        db.init_db(conn)
+        gid = db.create_goal(conn, title="G1", deadline="2026-12-18T00:00:00Z")
+        gid2 = db.create_goal(conn, title="G2", deadline="2026-12-18T00:00:00Z")
+        ids: dict[str, str] = {}
+        for name, status, goal in [
+            ("a.md", "ready", None),
+            ("b.md", "ready", None),
+            ("c.md", "ready", gid2),
+            ("d.md", "error", None),
+        ]:
+            ids[name] = db.create_material(
+                conn, goal_id=goal, topic_id=None, filename=name,
+                original_path=f"/x/{name}", markdown_path=f"/x/{name}",
+                content_hash=f"hash-{name}", summary="s", tags='[]',
+                effort_hours=1.0, status=status,
+            )
+        conn.commit()
+        conn.close()
+
+        c = _client_at(path)
+        # missing goal -> 404
+        r = c.post("/api/inbox/attach_ready", json={"goal_id": "nope"})
+        assert r.status_code == 404, r.text
+
+        # bulk attach: only ready + unattached materials
+        r = c.post("/api/inbox/attach_ready", json={"goal_id": gid})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["attached"] == 2
+        assert sorted(body["material_ids"]) == sorted([ids["a.md"], ids["b.md"]])
+
+        conn = db.connect(path)
+        for name, goal in [("a.md", gid), ("b.md", gid), ("c.md", gid2), ("d.md", None)]:
+            assert db.get_material(conn, ids[name])["goal_id"] == goal
+        conn.close()
+
+        # idempotent: a second call attaches nothing
+        r = c.post("/api/inbox/attach_ready", json={"goal_id": gid})
+        assert r.status_code == 200, r.text
+        assert r.json()["attached"] == 0
+    finally:
+        os.unlink(path)
+
+
 # --------------------------------------------------------------------------- topics
 
 

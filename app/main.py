@@ -776,6 +776,34 @@ async def attach_file(material_id: str, request: Request):
         conn.close()
 
 
+@app.post("/api/inbox/attach_ready")
+async def attach_ready(request: Request):
+    """Bulk-attach every ready, unattached material to ``goal_id``.
+
+    One replan for the goal (not one per file), inside the same transaction.
+    """
+    body = await _read_body(request)
+    goal_id = body.get("goal_id")
+    if not isinstance(goal_id, str) or not goal_id.strip():
+        raise HTTPException(status_code=422, detail="goal_id is required")
+    goal_id = goal_id.strip()
+    conn = _get_conn()
+    try:
+        with conn:
+            db.get_goal(conn, goal_id)  # 404 if missing
+            rows = conn.execute(
+                "SELECT id FROM materials WHERE status = 'ready' AND goal_id IS NULL"
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            for mid in ids:
+                db.update_material(conn, mid, goal_id=goal_id)
+            if ids:
+                engine.replan(conn, goal_id, _now_utc())
+        return {"attached": len(ids), "material_ids": ids, "goal_id": goal_id}
+    finally:
+        conn.close()
+
+
 # --------------------------------------------------------------------------- topics
 
 def _topic_out(t: dict[str, Any], members: list[dict[str, Any]]) -> dict[str, Any]:
