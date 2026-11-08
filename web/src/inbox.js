@@ -2,6 +2,7 @@
 
 import "../tailwind.css";
 import { api, toast, setText, initSettings, promptDialog, dialog, formatHours } from "./common.js";
+import { initTour } from "./tour.js";
 
 const chatList = document.getElementById("chat-list");
 const chatInput = document.getElementById("chat-input");
@@ -615,6 +616,7 @@ async function init() {
   await loadTopics();
   await refreshFiles();
   initSettings(btnSettings);
+  initTour("inbox");
 }
 
 init();

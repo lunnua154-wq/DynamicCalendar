@@ -170,6 +170,35 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
   stays, nothing is lost; user can retry with a converted file.
 - **Empty state** (no files): the drop zone is the star; no fake data.
 
+## First-run tour (all pages)
+
+Onboarding is an overlay, never a route: the app stays at three pages
+(`docs/DECISIONS.md`, 2026-11-08). Everything below lives in `web/src/tour.js`.
+
+- **Trigger**: a first visit auto-starts the tour **only on `/`**. Landing deep on
+  `/week` or `/inbox` never hijacks the screen; the `?` button starts it anywhere.
+- **Entry point**: `?` (`#btn-tour`, left of ⚙) in every header replays from step 1.
+  On `/week` or `/inbox` it navigates to `/?tour=1` first.
+- **Five steps**, each explaining *why*, not only where to click:
+  1. `/` → `#btn-import` — the imported calendar is the source of truth.
+  2. `/` → `#exam-banner` — a deadline becomes a goal (deadline = exam date).
+  3. `/inbox` → `#drop-zone` — materials are converted, tagged and de-duplicated.
+  4. `/week` → `#week-calendar` — the deterministic planner fills the free gaps.
+  5. `/week` → `#week-calendar` — a tick is atomic (done + 4 revisions + reflow);
+     dragging pins a block.
+- **Crossing pages**: `Next`/`Back` store the step index and load
+  `<page>?tour=1`; the destination page picks the step up on load. No API call.
+- **Spotlight**: the target is scrolled into view and ringed, the rest of the page
+  is dimmed by the ring's `box-shadow` cut-out. When the target is missing or has
+  no layout (an `.ics` with no exam event → no banner) the step renders as a
+  centred card and its copy says so — the tour never points at nothing.
+- **Exit**: `Skip tour`, `Esc` or `Finish` set `dynacalendar.tour.done=1` and drop
+  the stored step, so it never re-opens by itself; `?` clears the flag and replays.
+- **Storage**: `dynacalendar.tour.done` / `dynacalendar.tour.step`. A failing
+  `localStorage` (private mode) degrades to "the tour works for this page view".
+- **Scope**: presentation only. The tour never calls the API and never mutates
+  calendar data — the demo can run it on seeded data without side effects.
+
 ## Interaction invariants (all pages)
 1. Any optimistic UI change that fails a server call **reverts** (no half-states).
 2. A checkbox tick is always the single `POST /api/jobs/{id}/complete` call — never batched.
