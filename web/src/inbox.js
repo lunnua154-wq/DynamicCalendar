@@ -42,7 +42,7 @@ function appendChat(role, content) {
   const div = document.createElement("div");
   div.className = `flex ${role === "user" ? "justify-end" : "justify-start"}`;
   const bubble = document.createElement("div");
-  bubble.className = `max-w-[80%] p-3 rounded-2xl text-sm ${
+  bubble.className = `max-w-[80%] p-3 rounded-2xl text-sm whitespace-pre-wrap break-words ${
     role === "user"
       ? "bg-blue-600 text-white rounded-tr-none"
       : "bg-slate-200 text-slate-800 rounded-tl-none"
@@ -395,7 +395,7 @@ function renderFiles() {
     name.textContent = m.filename;
     left.appendChild(name);
     const statusBar = document.createElement("div");
-    statusBar.className = "flex items-center gap-3 mt-1 text-xs";
+    statusBar.className = "flex items-center gap-3 mt-1 text-xs flex-wrap";
     statusBar.appendChild(chip(m.status, m.status));
     if (m.status === "ready" && !m.goal_id) {
       statusBar.appendChild(chip("unattached", "unattached"));
@@ -408,14 +408,14 @@ function renderFiles() {
     }
     if (m.summary) {
       const s = document.createElement("span");
-      s.className = "text-slate-500 truncate";
+      s.className = "text-slate-500 truncate min-w-0";
       s.textContent = m.summary;
       statusBar.appendChild(s);
     }
     left.appendChild(statusBar);
     if (m.tags && m.tags.length) {
       const tagsRow = document.createElement("div");
-      tagsRow.className = "flex gap-1 mt-1";
+      tagsRow.className = "flex flex-wrap gap-1 mt-1";
       m.tags.forEach((t) => {
         const tag = document.createElement("span");
         tag.className = "text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded";
