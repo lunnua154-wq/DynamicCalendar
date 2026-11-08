@@ -6,6 +6,7 @@ import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/daygrid";
 import "../tailwind.css";
 import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings, localDateString, formatMonth } from "./common.js";
+import { initTour } from "./tour.js";
 
 const calendarEl = document.getElementById("calendar");
 const monthEl = document.getElementById("calendar-month");
@@ -331,3 +332,4 @@ calendar = new Calendar(calendarEl, {
 calendar.render();
 loadEvents();
 initSettings(btnSettings);
+initTour("calendar");

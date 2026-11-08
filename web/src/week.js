@@ -7,6 +7,7 @@ import interactionPlugin from "@fullcalendar/interaction";
 import "@fullcalendar/timegrid";
 import "../tailwind.css";
 import { api, toast, dialog, utcTime, utcDay, setText, formatHours, initSettings, localDateString } from "./common.js";
+import { initTour } from "./tour.js";
 
 const calendarEl = document.getElementById("week-calendar");
 const rangeEl = document.getElementById("week-range");
@@ -488,3 +489,4 @@ document.addEventListener("click", (e) => {
 
 loadEvents();
 initSettings(btnSettings);
+initTour("week");

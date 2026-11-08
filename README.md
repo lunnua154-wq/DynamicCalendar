@@ -57,6 +57,14 @@ every LLM skill falls back to a deterministic path.
 - Docker: `docker compose up --build` (Docker Desktop daemon must be running)
 - Tests: `pytest -q`
 
+## First run
+
+Open `/` for the first time and a five-step tour walks the whole loop: import an
+`.ics`, turn an exam into a goal, drop materials, watch the planner fill the gaps,
+then tick a block and see the revisions appear. Press `?` in the header to replay
+it at any time. The tour is an overlay over the three pages — it never calls the
+API and never changes your data (`docs/UX_SPEC.md` → *First-run tour*).
+
 ## Reset local state (temporary)
 
 Until a proper reset script exists, wipe the local demo state by hand:
