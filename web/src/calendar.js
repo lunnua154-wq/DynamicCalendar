@@ -48,55 +48,24 @@ function eventKindClass(kind) {
 function renderEvent(arg) {
   const e = arg.event;
   const job = e.extendedProps.job;
-  const isExternal = e.extendedProps.kind === "external";
+  const isDone = job != null && job.status === "done";
+  // Compact single-line chip for the month grid (docs/UX_SPEC.md P1):
+  // time + title only — ticking lives in the day panel; done = faded + strike.
   const container = document.createElement("div");
-  container.className = `p-1 text-[10px] leading-tight ${eventKindClass(e.extendedProps.kind)} rounded border`;
+  container.className =
+    `flex items-center gap-1 w-full overflow-hidden rounded border px-1 text-[10px] leading-tight ${eventKindClass(e.extendedProps.kind)}` +
+    (isDone ? " opacity-50 line-through" : "");
 
-  const timeLine = document.createElement("div");
-  timeLine.className = isExternal ? "font-medium text-slate-900" : "text-slate-700 font-medium";
   if (!e.allDay) {
-    timeLine.textContent = `${utcTime(e.startStr)}–${utcTime(e.endStr)}`;
-  } else {
-    timeLine.textContent = "All day";
+    const time = document.createElement("span");
+    time.className = "shrink-0 font-medium text-slate-700";
+    time.textContent = utcTime(e.startStr);
+    container.appendChild(time);
   }
-
-  const titleLine = document.createElement("div");
-  titleLine.className = "truncate text-slate-900";
-  titleLine.textContent = e.title;
-
-  const venueLine = document.createElement("div");
-  venueLine.className = "text-[9px] text-slate-500 truncate";
-  venueLine.textContent = e.extendedProps.venue ? `· ${e.extendedProps.venue}` : "";
-
-  container.appendChild(timeLine);
-  container.appendChild(titleLine);
-  container.appendChild(venueLine);
-
-  if (job && job.status !== "done") {
-    // checkbox for pending jobs (optimistic tick, reverts on failure)
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.className = "mt-1.5 shrink-0";
-    cb.title = "Mark done";
-    cb.onclick = async (ev) => {
-      ev.stopPropagation();
-      cb.disabled = true;
-      cb.checked = true;
-      container.classList.add("line-through", "text-slate-400", "opacity-60");
-      try {
-        await tickJob(job.id);
-        toast("Job marked done", "success");
-      } catch (err) {
-        cb.checked = false;
-        container.classList.remove("line-through", "text-slate-400", "opacity-60");
-        toast("Failed: " + err.message, "error");
-      } finally {
-        cb.disabled = false;
-      }
-    };
-    container.appendChild(cb);
-  }
-
+  const title = document.createElement("span");
+  title.className = "truncate";
+  title.textContent = e.title;
+  container.appendChild(title);
   return { domNodes: [container] };
 }
 
@@ -344,8 +313,11 @@ btnReplan.onclick = async () => {
 calendar = new Calendar(calendarEl, {
   plugins: [dayGridPlugin, interactionPlugin],
   initialView: "dayGridMonth",
-  height: "auto",
+  height: "100%",
   headerToolbar: false,
+  // Max 3 chips per cell, then "+n more" (docs/UX_SPEC.md P1) — taller chips
+  // spilled over neighbouring rows and were clipped by the fixed-height page.
+  dayMaxEvents: 3,
   initialDate: new Date(),
   events: [],
   eventContent: renderEvent,
