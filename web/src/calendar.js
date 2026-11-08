@@ -16,6 +16,8 @@ const btnClose = document.getElementById("btn-day-close");
 const btnImport = document.getElementById("btn-import");
 const btnReplan = document.getElementById("btn-replan");
 const btnToday = document.getElementById("btn-today");
+const btnPrevMonth = document.getElementById("btn-prev-month");
+const btnNextMonth = document.getElementById("btn-next-month");
 const btnSettings = document.getElementById("btn-settings");
 const fileIcs = document.getElementById("file-ics");
 const examBanner = document.getElementById("exam-banner");
@@ -265,6 +267,8 @@ function openDay(date) {
 
 btnClose.onclick = () => dayPanel.classList.toggle("hidden", true);
 btnToday.onclick = () => calendar.today();
+btnPrevMonth.onclick = () => calendar.prev();
+btnNextMonth.onclick = () => calendar.next();
 btnImport.onclick = () => fileIcs.click();
 fileIcs.onchange = async () => {
   const file = fileIcs.files[0];
