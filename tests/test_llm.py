@@ -517,3 +517,68 @@ def test_chat_tools_offline_untouched():
     out = c.chat(message="what's due?", history=[], context={})
     assert out["llm"] == "off"
     assert "actions" not in out
+
+
+# ---------------------------------------------------------------------------
+# diagnostics — regression test for the with_options SDK-shape bug
+
+
+def test_check_connection_uses_client_level_with_options():
+    """Regression: openai>=3 SDKs have ``with_options`` on the *client*, not on
+    ``chat.completions`` (removed in 3.x). A fake that mimics the real SDK
+    shape — with ``with_options`` only on the client — is what catches this."""
+
+    class _FakeCompletions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, model, messages, max_tokens, temperature):
+            self.calls.append((model, messages, max_tokens, temperature))
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="pong"))]
+            )
+
+    class _FakeChat:
+        def __init__(self):
+            self.completions = _FakeCompletions()
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = _FakeChat()
+            self.options = None
+
+        def with_options(self, **kwargs):
+            self.options = kwargs
+            return self
+
+    client = _FakeClient()
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = client
+    out = c.check_connection(timeout=5.0)
+    assert out["ok"] is True
+    assert out["model"] == "test-model"
+    assert client.options == {"max_retries": 0, "timeout": 5.0}
+    assert len(client.chat.completions.calls) == 1
+
+
+def test_check_connection_error_reported_not_raised():
+    # A client whose with_options chain blows up must surface as ok=False,
+    # never as a raised exception (the settings panel renders the answer).
+    class _BrokenCompletions:
+        def create(self, **_):
+            raise RuntimeError("endpoint down")
+
+    class _BrokenChat:
+        completions = _BrokenCompletions()
+
+    class _BrokenClient:
+        chat = _BrokenChat()
+
+        def with_options(self, **kwargs):
+            return self
+
+    c = LLMClient(_settings(llm_enabled=True))
+    c._client = _BrokenClient()
+    out = c.check_connection()
+    assert out["ok"] is False
+    assert out["kind"] == "unknown"
