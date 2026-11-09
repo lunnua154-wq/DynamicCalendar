@@ -185,9 +185,11 @@ class LLMClient:
         try:
             # No retries for a diagnostic: a dead endpoint should answer in
             # well under a second instead of backing off three times.
-            completions = client.chat.completions.with_options(
+            # with_options lives on the client in the openai>=3 SDK (not on
+            # chat.completions).
+            completions = client.with_options(
                 max_retries=0, timeout=timeout
-            )
+            ).chat.completions
             resp = completions.create(
                 model=self.settings.llm_model,
                 messages=[{"role": "user", "content": "Reply with the single word: pong"}],
