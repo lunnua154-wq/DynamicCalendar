@@ -75,8 +75,11 @@ deterministic pick.
   real semantics (a 2h "Linear Algebra Problem Session" is fatigue 3; a 3h
   "Film Studies" marathon may be 1).
 - `subject`: normalised lowercase topic (`math`, `physics`, `general`, …).
-  Heuristic: keyword map over the title. LLM: one **batched** call for all
-  un-annotated imported externals (ieft imported by `.ics`), per-item validation.
+  Heuristic: keyword map over the title. LLM: batched chunks of **15 events**
+  (explicit `POST /api/events/annotate`, ~45 s budget, per-chunk failure
+  isolation); per-item validation. App startup and ICS import annotate
+  **heuristically only** — deterministic, instant, and never able to stall a
+  request.
 - Materials contribute their **tags** as subject candidates (no schema change).
 - Users can re-annotate any time: `POST /api/events/annotate`.
 
@@ -132,8 +135,8 @@ When `rank` and an LLM is configured, each placeable job is offered a
 preceding event, subject match, day part, penalty breakdown). The model answers
 with `{"choice": <index>, "reason": "…"}`. Validation: index in range, reason
 clamped to 200 chars; anything else → deterministic pick. One LLM call per job,
-capped at `MAX_LLM_PLACEMENT_CALLS` (16) per replan; revisions and overflow use
-the deterministic scorer. `temperature=0`.
+capped at `MAX_LLM_PLACEMENT_CALLS` (16) and `MAX_LLM_PLACEMENT_SECONDS` (20) per
+replan, shared between learn and revision placements. `temperature=0`.
 
 Why a shortlist instead of letting the LLM emit arbitrary datetimes?
 Verification is then **membership in a hard-valid set** — sound by construction,
@@ -145,12 +148,16 @@ verifier; per-replan batched placement in a single prompt.
 ## 4. What gets implemented on this branch (Phase 1 + 2)
 
 1. **Smart placement (deterministic, default ON)** — `smart_placement=on`.
-   Candidates are scored with built-in penalties; the planner places at
-   `argmin(penalty, slot_start)` instead of *earliest*. With no annotations and
-   no constraints, all penalties are 0 and behaviour is **identical** to before
-   (all existing tests must stay green).
-2. **Annotations** — heuristic on import + `POST /api/events/annotate` (LLM batch
-   when configured, heuristic otherwise). Table + `db` helpers.
+   Candidates are scored with built-in penalties and the planner places at
+   `argmin(penalty, slot_start)` instead of *earliest*. Note: the built-in
+   back-to-back same-subject nudge (+10) applies even with **no annotations
+   at all**, so default slots can differ from the pre-branch packer (e.g.
+   two math materials land 08:00/09:40, not 08:50). `smart_placement=off`
+   restores the exact pre-branch earliest-free-slot behaviour (all existing
+   placement invariants remain green under either setting).
+2. **Annotations** — heuristic at import + app startup; LLM (chunked,
+   time-boxed) only on explicit `POST /api/events/annotate {"force": true}`.
+   Table + `db` helpers.
 3. **Constraints** — table, validators, scorer, REST CRUD
    (`GET/POST/DELETE /api/constraints[/{id}]`), applied by the engine;
    `hard` relaxation rule.
@@ -199,12 +206,19 @@ verifier; per-replan batched placement in a single prompt.
 - **Offline mode remains first-class.** Heuristic annotations, deterministic NL
   parser, penalty scorer, and relaxation rule all work with zero LLM. Ranking is
   the only LLM-only piece and defaults off.
-- **Cost:** ranking adds ≤16 short completions per replan; batched annotation
-  adds 1 call per import. Bounded by design.
+- **Cost:** ranking adds ≤16 short completions per replan (and ≤20 s wall-clock);
+  revisions share the budget. Annotation is free at import/startup (heuristic);
+  LLM annotation is chunked (15 events/call) and time-boxed (~45 s) only on the
+  explicit annotate endpoint.
 - **Subject inference is heuristic** (tags/keywords) until the LLM normalises;
   misclassification degrades placement quality, never validity.
-- **Scan cost**: candidate search is O(days × slots × (externals+jobs)) over the
-  deadline horizon — trivial for a single-user local app (≤ ~4k slots).
+- **Scan cost**: candidate search is O(days × slots × (externals+jobs)) in the
+  worst case, but the argmin over penalties ≥ 0 is found at the *first*
+  penalty-0 valid slot, so typical replans touch a handful of candidates;
+  full-horizon scans only happen when every candidate carries a positive
+  penalty or when a chooser is injected (the shortlist needs the survey).
+  Measured ~3 s for a 42-day horizon / 60-material plan with chooser off after
+  the early exit; keep an eye on this as goals grow.
 
 ## 7. Migration & rollback
 
@@ -215,6 +229,16 @@ verifier; per-replan batched placement in a single prompt.
 - Existing databases keep working; first replan after upgrade re-derives future
   unpinned jobs as usual (against the new scorer).
 
+## 8. Acceptance criteria
+- [x] A 3h `fatigue=3` lecture ending 15:00 pushes a default learn job to ≥16:00
+      (soft) and past the buffer entirely under `post_fatigue_buffer(hard=true)`.
+- [x] "avoid math right after math class" via chat creates `subject_gap` and the
+      replan visibly moves the math job.
+- [x] Same outcome with **no LLM configured** (offline NL parser + scorer).
+- [x] `llm_placement_mode='rank'` with a mocked LLM picks a non-earliest shortlisted
+      slot; `choice` out of range → deterministic fallback; LLM exception →
+      fallback; every created job carries `placement_source/placement_note`.
+- [x] `pytest -q` green; engine invariant tests unchanged.
 ## 9. Addendum — review pass (2026-11-09, same branch)
 
 An independent review of the first cut found the architecture sound but two
@@ -247,13 +271,34 @@ headline behaviours broken. Both are fixed; the honest status:
   restores earliest-free-slot *scoring* but stored constraints still hard-filter
   candidates (documented in config comment + P2/P4).
 
-## 8. Acceptance criteria
-- [ ] A 3h `fatigue=3` lecture ending 15:00 pushes a default learn job to ≥16:00
-      (soft) and past the buffer entirely under `post_fatigue_buffer(hard=true)`.
-- [ ] "avoid math right after math class" via chat creates `subject_gap` and the
-      replan visibly moves the math job.
-- [ ] Same outcome with **no LLM configured** (offline NL parser + scorer).
-- [ ] `llm_placement_mode='rank'` with a mocked LLM picks a non-earliest shortlisted
-      slot; `choice` out of range → deterministic fallback; LLM exception →
-      fallback; every created job carries `placement_source/placement_note`.
-- [ ] `pytest -q` green; engine invariant tests unchanged.
+### Addendum — second review pass (2026-11-09)
+
+An independent correctness review of the first commit flagged four trust
+defects (S1–S4) plus moderate items. Status:
+
+- **S1 fixed**: `_as_int` no longer truncates JSON floats (`2.9` → error, not `2`).
+- **S2 fixed**: startup and ICS import annotate **heuristically only**; LLM
+  annotation is explicit (`POST /api/events/annotate`), chunked (15 events), and
+  time-boxed (~45 s); it can never stall startup or an HTTP response. User
+  annotations (`source='user'`) survive `force` re-annotation.
+- **S3 fixed (docs)**: the "no data → identical to pre-branch" claim was false —
+  the built-in back-to-back nudge fires without annotations. Docs now say so
+  plainly; `smart_placement=off` remains the exact rollback (P2 pins it).
+- **S4 fixed**: `interleave` is soft-only end-to-end; `hard:true` → 422 (REST) /
+  error receipt (chat tool); the scorer never honours such a row.
+- **M1**: `find_placeable` early-exits at the first penalty-0 candidate
+  (penalties ≥ 0 → argmin), restoring sub-second replans; full scan remains
+  only for chooser-attached replans and all-positive-penalty horizons.
+- **M2**: absolute dead ends are reported on the replan receipt (`unplaced`);
+  conflicted revisions get a `placement_note`. Docs/AGENTS rule #11 updated to
+  promise exactly this.
+- **M4**: `blocked_day_part` judges interval overlap (11:30 slot vs 12:00–13:00
+  block is blocked), not start-hour alone.
+- **M5**: dead code deleted; `_constraint_out` single-sourced; list ordering
+  documented correctly.
+- **M6**: offline NL parser accepts "never more than N in a row".
+- **Engine test-control note**: `find_placeable` for revisions and learn jobs
+  shares the chooser budget — revision placements consume the same 16-call/20 s
+  budget as learn placements.
+- **M3** (synchronous replan inside chat's constraint writes) remains by
+  design, bounded by the per-replan budget; noted in DECISIONS, not queued.

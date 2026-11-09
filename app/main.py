@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .annotate import annotate_missing
 from . import actions, db, ics_sync, ingest, llm as llm_mod, planner
-from .constraints import parse_constraint_row
+
 from .config import (
     DEFAULT_SETTINGS,
     parse_settings,
@@ -68,16 +68,14 @@ def _page(name: str) -> Path:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """Backfill annotations for locked externals that lack one (e.g. all
-    pre-upgrade imports) once at app start. LLM batched when configured,
-    heuristic otherwise; never blocks startup. (``_get_conn`` is resolved at
-    call time.)"""
+    pre-upgrade imports) once at app start. Heuristic only — deterministic,
+    instant, offline-safe; never blocks startup (``_get_conn`` resolved at call
+    time). LLM annotation is available via POST /api/events/annotate."""
     try:
         conn = _get_conn()
         try:
-            settings = parse_settings(db.list_settings(conn))
-            llm = llm_mod.LLMClient(settings) if settings.llm_enabled else None
             with conn:
-                annotate_missing(conn, llm=llm)
+                annotate_missing(conn, llm=None, time_budget_seconds=0.0)
         finally:
             conn.close()
     except Exception:
@@ -396,9 +394,9 @@ async def ics_import(file: UploadFile = File(...)):
     conn = _get_conn()
     try:
         with conn:
-            settings = parse_settings(db.list_settings(conn))
-            llm = llm_mod.LLMClient(settings) if settings.llm_enabled else None
-            annotated = annotate_missing(conn, llm=llm)
+            # heuristic-only: annotation must never stall an HTTP response.
+            # LLM annotation is available via POST /api/events/annotate.
+            annotated = annotate_missing(conn, llm=None, time_budget_seconds=0.0)
             open_goals = [g for g in db.list_goals(conn) if g["status"] == "open"]
             for g in open_goals:
                 planner.replan(conn, g["id"], _now_utc())
@@ -477,6 +475,7 @@ def replan_goal(goal_id: str):
             "moved_jobs": result["moved_jobs"],
             "revisions_added": result["revisions_added"],
             "moved_count": len(result["moved_jobs"]),
+            "unplaced": result.get("unplaced", 0),
         }
     finally:
         conn.close()
@@ -1260,37 +1259,11 @@ async def put_settings(request: Request):
 
 # --------------------------------------------------------------------------- constraints
 
-def _constraint_out(row: dict[str, Any]) -> dict[str, Any]:
-    parsed = parse_constraint_row(row)
-    if parsed is None:
-        return {
-            "id": row["id"],
-            "kind": row["kind"],
-            "params": {},
-            "hard": bool(row["hard"]),
-            "enabled": bool(row["enabled"]),
-            "source": row["source"],
-            "label": row.get("label") or row["kind"],
-            "created_at": row["created_at"],
-            "broken": True,
-        }
-    return {
-        "id": parsed["id"],
-        "kind": parsed["kind"],
-        "params": parsed["params"],
-        "hard": parsed["hard"],
-        "enabled": bool(row["enabled"]),
-        "source": row["source"],
-        "label": parsed["label"],
-        "created_at": row["created_at"],
-    }
-
-
 @app.get("/api/constraints")
 def list_constraints_endpoint():
     conn = _get_conn()
     try:
-        return [_constraint_out(row) for row in db.list_constraints(conn)]
+        return actions.list_constraints(conn)
     finally:
         conn.close()
 
@@ -1336,7 +1309,9 @@ async def annotate_events_endpoint(request: Request):
 
     Body: {"force": false} — when true, every external is re-annotated
     (LLM when configured, heuristic otherwise). Default annotates only
-    events that have no annotation yet.
+    events that have no annotation yet. Annotations sourced 'user' are
+    never overwritten. LLM runs here are time-boxed (~45 s) and fall back
+    to the heuristic for what they cannot cover.
     """
     body = await _read_body(request)
     force = bool(body.get("force", False))
@@ -1348,7 +1323,14 @@ async def annotate_events_endpoint(request: Request):
                     e for e in db.list_events(conn)
                     if e.get("kind") == "external" and e.get("locked")
                 ]
+                user_marked = {
+                    row["event_id"]
+                    for row in db.list_annotations(conn)
+                    if row.get("source") == "user"
+                }
                 for e in externals:
+                    if e["id"] in user_marked:
+                        continue  # user annotations are never overwritten
                     conn.execute(
                         "DELETE FROM event_annotations WHERE event_id = ?", (e["id"],)
                     )

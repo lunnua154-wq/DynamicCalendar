@@ -72,7 +72,7 @@ jobs
 event_annotations
   event_id    TEXT PRIMARY KEY REFERENCES events(id)  -- one annotation per external event
   subject     TEXT NOT NULL DEFAULT 'general'   -- lowercase normalised subject (tags/keyword map or LLM)
-  fatigue     INTEGER NOT NULL DEFAULT 0        -- 0=none … 3=very tiring; heuristics: ≥3h→3, ≥2h→2, ≥45m→1, +1 'lab'; all-day → 0
+  fatigue     INTEGER NOT NULL DEFAULT 0        -- 0=none … 3=very tiring; heuristics: ≥3h→3, ≥2h→2, ≥45m→1, +1 'lab'; all-day → 0; LLM chunks of 15 (explicit annotate endpoint only)
   source      TEXT NOT NULL DEFAULT 'heuristic'
               CHECK (source IN ('heuristic','llm','user'))
   note        TEXT NULL                         -- short LLM note, optional

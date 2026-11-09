@@ -325,6 +325,133 @@ def test_externals_are_annotated_lazily(conn):
     assert annotate.annotate_missing(conn, llm=None) == 0
 
 
+# --------------------------------------- review-2 fixes: S1 / S4 / M4 / M6
+
+def test_fractional_integer_params_are_rejected():
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        con.validate_params("post_fatigue_buffer", {"min_fatigue": 2.9})
+    with _pytest.raises(ValueError):
+        con.validate_params("interleave", {"max_consecutive": 1.5})
+    assert con.validate_params("post_fatigue_buffer", {"min_fatigue": 2}) == {
+        "min_fatigue": 2,
+        "buffer_minutes": 60,
+    }
+
+
+def test_interleave_hard_is_rejected(conn):
+    import pytest as _pytest
+
+    from app import actions
+
+    with _pytest.raises(ValueError):
+        actions.add_constraint(
+            conn, kind="interleave", params={"max_consecutive": 2},
+            hard=True, source="user", now_iso=NOW,
+        )
+    # and the tool dispatch never persists it either
+    from app import tools
+
+    result = tools.dispatch(conn, "add_constraint",
+                            {"kind": "interleave", "params": {"max_consecutive": 2},
+                             "hard": True},
+                            NOW)
+    assert "error" in result
+    assert db.list_constraints(conn) == []
+
+
+def test_blocked_day_part_uses_interval_overlap():
+    from datetime import datetime as dt
+
+    slot_start = dt(2026, 11, 3, 11, 30)  # 11:30-12:20 overlaps a 12:00-13:00 block
+    slot_end = dt(2026, 11, 3, 12, 20)
+    constraints = [{"id": "c", "kind": "blocked_day_part",
+                    "params": {"start_hour": 12, "end_hour": 13},
+                    "hard": True, "label": "lunch"}]
+    penalty, blocked, reasons = con.score_slot(
+        slot_start, slot_end, subjects=[], externals=[],
+        constraints=constraints, smart=False,
+    )
+    assert blocked is True
+
+
+def test_parse_nl_never_more_than_n_in_a_row():
+    out = con.parse_nl("never more than 3 in a row")
+    assert out is not None
+    assert out["kind"] == "interleave"
+    assert out["params"]["max_consecutive"] == 3
+
+
+# --------------------------------------- review-2 fixes: M2 (unplaced) + annotation chunks
+
+def test_unplaced_slots_surface_in_replan_receipt(conn):
+    # 0.5h capacity cannot fit a 50-minute slot anywhere
+    db.update_setting(conn, "daily_capacity_hours", json.dumps(0.5))
+    conn.commit()
+    gid, _ = _add_goal_material(conn, effort=0.8)
+    result = engine.replan(conn, gid, NOW)
+    assert result["unplaced"] >= 1
+    assert db.jobs_for_goal(conn, gid) == []
+
+
+def test_annotate_chunks_over_15_events():
+    import json as _json
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.config import Settings
+    from app.llm import LLMClient
+
+    settings = Settings(
+        daily_capacity_hours=4.0, slot_minutes=50, min_slot_minutes=30,
+        revision_intervals_days=[1, 3, 7, 14],
+        llm_base_url="http://localhost:11434/v1", llm_model="test-model",
+        llm_api_key="", default_effort_hours=1.0,
+    )
+    calls = {"n": 0}
+
+    def fake_create(**kwargs):
+        calls["n"] += 1
+        events = _json.loads(kwargs["messages"][0]["content"].split("Events: ")[1])
+        payload = {"annotations": [
+            {"event_id": e["event_id"], "subject": "cs", "fatigue": 1} for e in events
+        ]}
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=_json.dumps(payload)))]
+        )
+
+    fake = MagicMock()
+    fake.chat.completions.with_options.return_value = fake.chat.completions
+    fake.chat.completions.create.side_effect = fake_create
+    client = LLMClient(settings)
+    client._client = fake
+    events = [
+        {"event_id": f"e{i}", "title": f"Lecture {i}", "duration_minutes": 60, "venue": None}
+        for i in range(32)
+    ]
+    out = client.annotate_events(events=events, time_budget_seconds=None)
+    assert len(out) == 32
+    assert calls["n"] == 3  # 15 + 15 + 2
+
+
+def test_annotate_force_preserves_user_source(conn):
+    # contract-level: the force path must never overwrite source='user'
+    eid = db.create_event(
+        conn, kind="external", title="THE HARDEST LECTURE EVER",
+        dtstart="2026-11-04T08:00:00Z", dtend="2026-11-04T12:00:00Z",
+        locked=1, ics_uid="uid-user-note",
+    )
+    db.upsert_annotation(conn, eid, subject="math", fatigue=3, source="user", note="mine")
+    conn.commit()
+    marked = {
+        row["event_id"]
+        for row in db.list_annotations(conn)
+        if row["source"] == "user"
+    }
+    assert eid in marked
+
+
 def test_constraint_listed_and_reused_not_duplicated(conn):
     from app import actions
 

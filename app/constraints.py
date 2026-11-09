@@ -46,11 +46,12 @@ def _as_int(value: Any, key: str, lo: int, hi: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{key} must be an integer")
     try:
-        num = int(value)
+        num = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"{key} must be an integer") from None
-    if num != float(num):
+    if not num.is_integer():
         raise ValueError(f"{key} must be a whole number")
+    num = int(num)
     if not (lo <= num <= hi):
         raise ValueError(f"{key} must be between {lo} and {hi}")
     return num
@@ -171,7 +172,7 @@ def _in_after_window(slot_start, end, minutes: int) -> bool:
 
 def score_slot(
     slot_start,
-    slot_end,  # noqa: ARG001 - end kept for symmetry/future rules
+    slot_end,
     *,
     subjects: list[str],
     externals: list[dict[str, Any]],
@@ -251,12 +252,14 @@ def score_slot(
                         )
                         break
         elif kind == "blocked_day_part":
-            hour = slot_start.hour
-            if int(params["start_hour"]) <= hour < int(params["end_hour"]):
+            start_h, end_h = int(params["start_hour"]), int(params["end_hour"])
+            window_start = slot_start.replace(hour=start_h, minute=0, second=0, microsecond=0)
+            window_end = slot_start.replace(hour=end_h, minute=0, second=0, microsecond=0)
+            # interval-vs-window overlap, not just the slot's start hour
+            if slot_start < window_end and window_start < slot_end:
                 penalise(
                     BLOCKED_DAY_PART_PENALTY,
-                    f"inside blocked day part {params['start_hour']:02.0f}:00–"
-                    f"{params['end_hour']:02.0f}:00",
+                    f"inside blocked day part {start_h:02.0f}:00–{end_h:02.0f}:00",
                     hard,
                 )
 
@@ -328,7 +331,8 @@ _LUNCH_CLAUSE = re.compile(
     re.IGNORECASE,
 )
 _INTERLEAVE_CLAUSE = re.compile(
-    r"(?:no|avoid|max(?:imum)?\s*)\s*(?:more\s+than\s+)?(\d+)\s+(?:consecutive|in\s+a\s+row)",
+    r"(?:no|avoid|never|don't|do not|not|max(?:imum)?)\s*"
+    r"(?:(?:put\s+)?more\s+than\s+)?(\d+)\s+(?:consecutive|in\s+a\s+row)",
     re.IGNORECASE,
 )
 

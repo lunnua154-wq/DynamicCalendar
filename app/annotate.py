@@ -129,12 +129,16 @@ def _normalize_llm_item(item: Any, event_ids: set[str]) -> dict[str, Any] | None
     return {"event_id": event_id, "subject": subject, "fatigue": fatigue, "note": note}
 
 
-def annotate_missing(conn, *, llm: Any = None) -> int:
+def annotate_missing(conn, *, llm: Any = None, time_budget_seconds: float | None = 45.0) -> int:
     """Annotate every locked external event lacking an annotation.
 
-    Returns the number of events annotated. With ``llm`` configured, un-annotated
-    events are sent in *one* batched call; failures fall back to the heuristic
-    per event (never raises — annotation must never block an import/replan).
+    Returns the number of events annotated. With ``llm`` configured and
+    ``time_budget_seconds`` not zero, un-annotated events are sent in chunks of
+    15; once the budget is spent, remaining events fall back to the heuristic
+    individually (never raises — annotation must never block an import/replan).
+    Pass ``time_budget_seconds=0`` to skip the LLM entirely (app startup and
+    ICS import use this — deterministic, instant, offline-safe); ``None`` means
+    no wall-clock budget (explicit user-triggered re-annotation).
     """
     externals = [e for e in db.list_events(conn) if e.get("kind") == "external" and e.get("locked")]
     annotated_ids = db.annotated_event_ids(conn)
@@ -142,19 +146,20 @@ def annotate_missing(conn, *, llm: Any = None) -> int:
     if not missing:
         return 0
 
+    payload = [
+        {
+            "event_id": e["id"],
+            "title": e["title"],
+            "duration_minutes": event_duration_minutes(e),
+            "venue": e.get("venue"),
+        }
+        for e in missing
+    ]
     llm_items: list[dict[str, Any]] = []
-    if llm is not None:
+    if llm is not None and time_budget_seconds != 0:
         try:
             llm_items = llm.annotate_events(
-                events=[
-                    {
-                        "event_id": e["id"],
-                        "title": e["title"],
-                        "duration_minutes": event_duration_minutes(e),
-                        "venue": e.get("venue"),
-                    }
-                    for e in missing
-                ]
+                events=payload, time_budget_seconds=time_budget_seconds
             )
         except Exception:
             llm_items = []

@@ -20,8 +20,8 @@ multipart.
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /api/events?from=&to=` | — | `[{id, kind, title, dtstart, dtend, venue, all_day, job?}]` — `job: {id, status, kind, material_id, revision_round, duration_min, pinned, placement_source, placement_note}` attached for study/revision kinds |
-| `POST /api/ics/import` | multipart `file` (.ics) | `{imported, skipped, exams_found: [titles], exams: [{event_id, title, dtstart, dtend, venue}], annotated: n, replanned_goals: [ids]}` — `annotated` counts external events given a semantic annotation (subject/fatigue) in this request; LLM batched when configured, heuristic otherwise |
-| `POST /api/events/annotate` | `{force?: bool}` | `{annotated: n}` — annotate external events that lack one (or re-annotate all when `force: true`). Heuristic offline; one batched LLM call per event set when configured |
+| `POST /api/ics/import` | multipart `file` (.ics) | `{imported, skipped, exams_found: [titles], exams: [{event_id, title, dtstart, dtend, venue}], annotated: n, replanned_goals: [ids]}` — `annotated` counts external events given a heuristic annotation (keyword/duration) in this request; app startup backfills pre-upgrade databases the same way; LLM annotation is on-demand only via `POST /api/events/annotate` |
+| `POST /api/events/annotate` | `{force?: bool}` | `{annotated: n}` — annotate external events that lack one (or re-annotate all when `force: true`). LLM (chunked, ~45 s budget, heuristic for what it cannot cover) when an endpoint is configured, heuristic otherwise. Annotations sourced `user` are **never** overwritten by `force`; LLM/time failures degrade per event to the heuristic |
 | `GET /api/stats?goal_id=` | — | `{totals: {planned_min, done_min, progress, materials, revisions_due}, goals: [...], by_day: [{date, planned_min, done_min}]}` — `by_day` covers the trailing 13 days and the next 14; unknown `goal_id` → **404** |
 
 `exams` is additive (kept alongside `exams_found`) so the Calendar exam banner can
@@ -40,7 +40,7 @@ ISO-8601 timestamps are also accepted (then they are exact, `to` exclusive).
 | `GET /api/goals` | — | `[{id, title, deadline, exam_event_id, status, progress, total_effort_hours, done_effort_hours, planned_jobs, done_jobs}]` |
 | `GET /api/goals/{id}` | — | same row + progress fields |
 | `POST /api/goals` | `{title, deadline?, exam_event_id?}` | goal row + progress; triggers `replan` if a deadline is known |
-| `POST /api/goals/{id}/replan` | — | `{moved_jobs: [ids], revisions_added: [ids], moved_count}` |
+| `POST /api/goals/{id}/replan` | — | `{moved_jobs: [ids], revisions_added: [ids], moved_count, unplaced}` — `unplaced` counts jobs that could not fit anywhere before the deadline (capacity exhausted, not a preference failure) and would otherwise have vanished silently |
 
 `deadline` may be omitted when `exam_event_id` is supplied: the server derives it
 from that external event. If neither is present → **422**.
@@ -118,7 +118,11 @@ Kinds and params (bounds-validated, **422** otherwise):
 `subject_gap` `{subject: string ≤40 chars, gap_minutes: 15–240}` — no study of *subject* within N min after a same-subject external (“no math right after math class”);
 `interleave` `{max_consecutive: 1–5}` — penalise more than N same-subject jobs in a row (soft-only);
 `blocked_day_part` `{start_hour: 0–23, end_hour: 0–23}` — no (or penalised) study between the hours.
-Add `hard: true` to any kind to exclude matching slots outright. `label` is optional (auto-generated from kind+params).
+Add `hard: true` to any kind to exclude matching slots outright — except
+`interleave`, which is soft-only (`hard: true` → **422**). `label` is optional
+(auto-generated from kind+params). `blocked_day_part` blocks on interval
+overlap (a 50-minute slot starting 11:30 overlaps a 12:00–13:00 block), not
+just the slot's start hour.
 
 ## Settings
 | Method & path | Body | Returns |

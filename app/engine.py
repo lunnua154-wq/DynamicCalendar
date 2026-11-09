@@ -190,7 +190,7 @@ def replan(
     goal = db.get_goal(conn, goal_id)
     deadline_local = to_local(_parse_deadline(goal["deadline"])).date()
     if deadline_local < today:
-        return {"moved_jobs": [], "revisions_added": []}
+        return {"moved_jobs": [], "revisions_added": [], "unplaced": 0}
 
     slot_minutes = settings.slot_minutes
     capacity_minutes = int(settings.daily_capacity_hours * 60)
@@ -396,6 +396,11 @@ def replan(
             if blocked:
                 blocked_seen += 1
                 continue
+            # Penalties can't be negative, so the first penalty-0 candidate is
+            # the argmin — return it instead of scanning the whole horizon.
+            # (The chooser needs the full candidate set, so it opts out.)
+            if chooser is None and penalty == 0.0:
+                return slot_start, slot_end, "engine", None
             valid.append((penalty, slot_start, slot_end, reasons))
 
         relaxed = False
@@ -625,6 +630,7 @@ def replan(
                 }
             )
     last_subject = ""
+    unplaced = 0
     while queue:
         # pick the first queued material whose primary subject was not just placed
         pick_index = next(
@@ -642,8 +648,11 @@ def replan(
             effort_hours=item["effort"],
         )
         if slot is None:
-            # No candidate exists anywhere before the deadline; drop this
-            # material (the remaining materials face the same dead end).
+            # No candidate exists anywhere before the deadline — the capacity,
+            # not a constraint of preference, is exhausted. The material is
+            # not dropped silently: `unplaced` counts it and surfaces on the
+            # replan receipt.
+            unplaced += 1
             queue.pop(pick_index)
             continue
         slot_start, slot_end, p_source, p_note = slot
@@ -671,7 +680,7 @@ def replan(
             conn.execute("DELETE FROM jobs WHERE id = ?", (stale["id"],))
             db.delete_event(conn, stale["event_id"])
 
-    return {"moved_jobs": moved_jobs, "revisions_added": revisions_added}
+    return {"moved_jobs": moved_jobs, "revisions_added": revisions_added, "unplaced": unplaced}
 
 
 def _create_job_event(
@@ -745,4 +754,6 @@ def _create_conflicted_revision(
         status="conflicted",
         revision_round=round_no,
         parent_job_id=parent_job_id,
+        placement_source="engine",
+        placement_note=f"no feasible slot before the goal deadline (round {round_no})",
     )

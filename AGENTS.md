@@ -17,7 +17,7 @@ The calendar (ICS) is the source of truth; **deterministic Python** schedules st
 8. **A checkbox tick is one atomic server operation** — in a single SQLite transaction: mark done → schedule revision jobs → recompute remaining future work.
 9. **No `datetime.now()` in engine code** — the clock is injected, so tests are deterministic.
 10. **LLM output is always validated and stored as data** (see skill table). The engine reads data; it never calls the LLM (an injected `chooser` is a dependency, like the injected clock).
-11. **Hard constraints relax, work is never dropped.** User/LLM constraints (`post_fatigue_buffer`, `subject_gap`, `blocked_day_part`) may be marked `hard`; if no candidate survives them, they degrade to soft penalties for that placement and `placement_note` records the relaxation. A plan can never deadlock or silently lose a job.
+11. **Hard constraints relax, work is never dropped.** User/LLM constraints (`post_fatigue_buffer`, `subject_gap`, `blocked_day_part`) may be marked `hard`; if no candidate survives them, they degrade to soft penalties for that placement and `placement_note` records the relaxation. When *no* candidate exists at all (capacity/deadline exhausted — a real dead end), the engine reports `unplaced` on the replan receipt instead of silently vanishing the job.
 12. **Placement receipts.** Every created job records `placement_source` (`engine`|`llm`) and `placement_note` (why this slot). Surfacing receipts is a feature — do not strip them for cosmetics.
 
 ## LLM skills (contracts — implemented in `app/llm.py`)
@@ -35,7 +35,7 @@ Constraint kinds (stored in `constraints`, enforced by `app/constraints.py` + th
 - `post_fatigue_buffer` — no study within N min of a fatigue≥M external (`min_fatigue` 1–3, `buffer_minutes` 15–240, `hard`)
 - `subject_gap` — no study of `subject` within N min after an external of the same subject (`gap_minutes` 15–240, `hard`)
 - `interleave` — penalise more than `max_consecutive` (1–5) same-subject jobs in a row (soft only)
-- `blocked_day_part` — no (or penalised) study between `start_hour` and `end_hour` (`hard`)
+- `blocked_day_part` — no (or penalised) study between `start_hour` and `end_hour`, measured as interval overlap (a 50-minute slot starting 11:30 overlaps 12:00–13:00) (`hard`)
 
 Bounds validation (enforced server-side, LLM or user):
 - `daily_capacity_hours`: 0.5 – 12

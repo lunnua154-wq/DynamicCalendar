@@ -277,7 +277,8 @@ def _replan_open_goals(conn, now_iso: str) -> int:
     return count
 
 
-def _constraint_out(row: dict) -> dict:
+def constraint_out(row: dict) -> dict:
+    """One constraint row as the API exposes it."""
     parsed = parse_constraint_row(row)
     if parsed is None:
         # broken row (out-of-band edit): surface it as unparsed instead of crashing
@@ -305,8 +306,8 @@ def _constraint_out(row: dict) -> dict:
 
 
 def list_constraints(conn) -> list[dict]:
-    """All constraints, newest first (parse failures degrade to raw params)."""
-    return [_constraint_out(row) for row in db.list_constraints(conn)]
+    """All constraints in stable creation order (oldest first)."""
+    return [constraint_out(row) for row in db.list_constraints(conn)]
 
 
 def add_constraint(
@@ -328,10 +329,12 @@ def add_constraint(
     if isinstance(params, str):
         params = json.loads(params or "{}")
     kind_text, params_norm = validate_constraint(kind, params)
+    if kind_text == "interleave" and bool(hard):
+        raise ValueError("interleave is soft-only; 'hard' is not supported for it")
     params_serialized = serialise_params(params_norm)
     for row in db.list_constraints(conn):
         if row["kind"] == kind_text and row["params"] == params_serialized:
-            return {"constraint": _constraint_out(row), "replanned_goals": 0, "existing": True}
+            return {"constraint": constraint_out(row), "replanned_goals": 0, "existing": True}
     label_text = str(label).strip()[:120] if label else constraint_label(kind_text, params_norm)
     constraint_id = db.create_constraint(
         conn,
@@ -346,7 +349,7 @@ def add_constraint(
         r for r in db.list_constraints(conn) if r["id"] == constraint_id
     )
     return {
-        "constraint": _constraint_out(row),
+        "constraint": constraint_out(row),
         "replanned_goals": replanned,
     }
 

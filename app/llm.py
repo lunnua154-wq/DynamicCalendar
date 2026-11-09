@@ -661,17 +661,25 @@ class LLMClient:
 
     # ------------------------------------------------------------- annotation
 
-    def annotate_events(self, *, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """One batched call annotating external events with subject/fatigue.
+    def annotate_events(
+        self, *, events: list[dict[str, Any]], time_budget_seconds: float | None = 45.0
+    ) -> list[dict[str, Any]]:
+        """Annotate external events in 15-event chunks; per-chunk fault isolation.
+
+        ``time_budget_seconds`` bounds the whole operation (None = no budget);
+        chunks not attempted before the deadline are simply absent from the
+        result — the caller fills the gaps with the heuristic.
 
         Returns validated items ``{"event_id", "subject", "fatigue", "note"}`` —
-        see ``app.annotate.normalize_llm_annotations``. Raises on transport
-        failure so the caller can fall back to the heuristic per event.
+        see ``app.annotate.normalize_llm_annotations``. Raises on *total*
+        transport failure so the caller can fall back to the heuristic.
         """
         if self.client is None:
             raise RuntimeError("LLM not configured")
         if not events:
             return []
+
+        deadline = None if time_budget_seconds is None else time.monotonic() + time_budget_seconds
 
         def annotate_chunk(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
             payload = [
@@ -712,6 +720,8 @@ class LLMClient:
         any_success = False
         chunk_size = 15
         for start in range(0, len(events), chunk_size):
+            if deadline is not None and time.monotonic() > deadline:
+                break  # budget spent: caller fills the rest heuristically
             chunk = events[start : start + chunk_size]
             try:
                 out.extend(annotate_chunk(chunk))

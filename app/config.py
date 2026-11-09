@@ -185,6 +185,19 @@ def _decode_setting(value: str) -> str:
     return decoded if isinstance(decoded, str) else value
 
 
+def _parse_toggle(raw: Any, allowed: tuple[str, str], default: str) -> str:
+    """Decode a two-state setting, degrading corrupt values to ``default``.
+
+    ``parse_settings`` runs on every replan/chat; a hand-corrupted row must
+    not 500 every request — the validators above still guard the API path.
+    """
+    try:
+        text = str(_decode_setting(raw if raw is not None else "")).strip().lower()
+    except Exception:
+        return default
+    return text if text in allowed else default
+
+
 def parse_settings(rows: list[dict[str, Any]]) -> Settings:
     values = {row["key"]: row["value"] for row in rows}
     return Settings(
@@ -221,10 +234,6 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
         utc_offset_minutes=(
             int(_decode_setting(values.get("utc_offset_minutes", "")) or 0)
         ),
-        smart_placement=validate_smart_placement(
-            _decode_setting(values.get("smart_placement", "on")) or "on"
-        ),
-        llm_placement_mode=validate_llm_placement_mode(
-            _decode_setting(values.get("llm_placement_mode", "off")) or "off"
-        ),
+        smart_placement=_parse_toggle(values.get("smart_placement", "on"), ("on", "off"), "on"),
+        llm_placement_mode=_parse_toggle(values.get("llm_placement_mode", "off"), ("off", "rank"), "off"),
     )

@@ -651,21 +651,6 @@ def list_annotations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def delete_annotations_except(
-    conn: sqlite3.Connection, event_ids: set[str]
-) -> None:
-    """Drop annotations for events that no longer exist (after a re-import
-    removes an external). Never touches constraint data."""
-    if event_ids:
-        placeholders = ", ".join("?" for _ in event_ids)
-        conn.execute(
-            f"DELETE FROM event_annotations WHERE event_id NOT IN ({placeholders})",
-            tuple(event_ids),
-        )
-    else:
-        conn.execute("DELETE FROM event_annotations")
-
-
 # ---------------------------------------------------------------- constraints
 
 def list_constraints(
@@ -702,13 +687,4 @@ def create_constraint(
 
 def delete_constraint(conn: sqlite3.Connection, constraint_id: str) -> bool:
     cur = conn.execute("DELETE FROM constraints WHERE id = ?", (constraint_id,))
-    return cur.rowcount > 0
-
-
-def set_constraint_enabled(
-    conn: sqlite3.Connection, constraint_id: str, enabled: bool
-) -> bool:
-    cur = conn.execute(
-        "UPDATE constraints SET enabled = ? WHERE id = ?", (int(enabled), constraint_id)
-    )
     return cur.rowcount > 0

@@ -93,6 +93,26 @@ def test_constraints_crud_happy_path():
     assert r.json() == []
 
 
+def test_create_constraint_fractional_param_422():
+    path = _temp_db()
+    client = _client_at(path)
+    r = client.post(
+        "/api/constraints",
+        json={"kind": "post_fatigue_buffer", "params": {"min_fatigue": 2.9}},
+    )
+    assert r.status_code == 422
+
+
+def test_create_constraint_interleave_hard_422():
+    path = _temp_db()
+    client = _client_at(path)
+    r = client.post(
+        "/api/constraints",
+        json={"kind": "interleave", "params": {"max_consecutive": 2}, "hard": True},
+    )
+    assert r.status_code == 422
+
+
 def test_create_constraint_invalid_kind_422():
     path = _temp_db()
     client = _client_at(path)
@@ -135,6 +155,31 @@ def test_settings_smart_placement_validation():
     assert r.status_code == 422
     r = client.put("/api/settings", json={"llm_placement_mode": "rank"})
     assert r.status_code == 200
+
+
+def test_annotate_endpoint_force_preserves_user_annotations():
+    path = _temp_db()
+    conn = db.connect(path)
+    db.init_db(conn)
+    eid = db.create_event(
+        conn, kind="external", title="THE HARDEST LECTURE EVER",
+        dtstart="2026-11-05T08:00:00Z", dtend="2026-11-05T12:00:00Z",
+        locked=1, ics_uid="uid-user-preserved",
+    )
+    db.upsert_annotation(conn, eid, subject="cs", fatigue=2, source="user", note="mine")
+    conn.commit()
+    conn.close()
+    client = _client_at(path)
+    r = client.post("/api/events/annotate", json={"force": True})
+    assert r.status_code == 200
+    check = db.connect(path)
+    row = check.execute(
+        "SELECT source, fatigue, note FROM event_annotations WHERE event_id=?", (eid,)
+    ).fetchone()
+    check.close()
+    assert row["source"] == "user"
+    assert row["fatigue"] == 2
+    assert row["note"] == "mine"
 
 
 def test_annotate_endpoint_marks_externals():

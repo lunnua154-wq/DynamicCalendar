@@ -162,6 +162,7 @@ TOOLS: list[dict[str, Any]] = [
                 "'post_fatigue_buffer' {min_fatigue 1-3, buffer_minutes 15-240, "
                 "optional 'hard'}, 'interleave' {max_consecutive 1-5}, "
                 "'blocked_day_part' {start_hour 0-23, end_hour 0-23, optional 'hard'}. "
+                "Interleave is soft-only (hard=true is rejected for it). "
                 "Hard constraints exclude candidates (relaxed only if no candidate "
                 "survives); soft constraints just penalise them. Re-plans open goals "
                 "and returns a receipt."

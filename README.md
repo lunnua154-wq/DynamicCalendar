@@ -23,8 +23,9 @@ Docker image.
 - **Smart placement (on by default, deterministic)** — the planner scores valid
   candidates instead of taking the earliest free slot: no study right after
   tiring events (`fatigue` annotations), no same-subject work right after a
-  same-subject external, interleaving mildly preferred. All-zero penalties
-  degenerate to the legacy earliest-free-slot behaviour.
+  same-subject external, interleaving mildly preferred. The built-in
+  back-to-back nudge applies by default — `smart_placement=off` restores the
+  exact pre-branch earliest-free-slot behaviour (stored constraints still apply).
 - **Natural-language constraints** — "avoid math right after math class",
   "no study right after long lectures": compiled by the LLM (chat tool
   `add_constraint`) or by a deterministic offline parser, stored as data,

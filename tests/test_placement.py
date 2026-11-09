@@ -72,8 +72,8 @@ def test_smart_placement_avoids_right_after_tiring_lecture(conn):
     jobs = _job_slots(conn, gid)
     assert len(jobs) == 1
     slot_start = jobs[0][0]
-    # 12:00 and 12:50 are within 60 min of a fatigue-3 event (penalised);
-    # the planner must jump to 13:40 instead of the earliest free slot.
+    # 12:10 and 13:00 would both sit within 60 min of a fatigue-3 event
+    # (penalised); the planner jumps to the first zero-penalty slot instead
     assert slot_start >= "2026-11-03T13:00:00Z"
 
 
@@ -205,6 +205,23 @@ def test_annotate_missing_recognises_course_codes(conn):
     assert rows[0]["subject"] == "cs"
 
 
+def test_annotate_budget_zero_skips_llm_entirely(conn):
+    db.create_event(
+        conn, kind="external", title="MATH2001 Lecture",
+        dtstart="2026-11-03T08:00:00Z", dtend="2026-11-03T12:00:00Z",
+        locked=1, ics_uid="uid-budget",
+    )
+    conn.commit()
+
+    class ExplodingLLM:
+        def annotate_events(self, *, events, time_budget_seconds=45.0):
+            raise AssertionError("LLM must not be called with budget=0")
+
+    n = annotate.annotate_missing(conn, llm=ExplodingLLM(), time_budget_seconds=0.0)
+    assert n == 1
+    assert db.list_annotations(conn)[0]["source"] == "heuristic"
+
+
 def test_annotate_missing_heuristic_scores_long_lecture(conn):
     db.create_event(
         conn, kind="external", title="MATH2001 Lecture",
@@ -231,7 +248,7 @@ def test_annotate_missing_llm_overrides_and_fallback_works(conn):
     conn.commit()
 
     class FakeLLM:
-        def annotate_events(self, *, events):
+        def annotate_events(self, *, events, time_budget_seconds=45.0):
             return [
                 {"event_id": events[0]["event_id"], "subject": "math",
                  "fatigue": 3, "note": "very demanding"}
@@ -243,10 +260,10 @@ def test_annotate_missing_llm_overrides_and_fallback_works(conn):
     assert rows[0]["fatigue"] == 3
 
     class BrokenLLM:
-        def annotate_events(self, *, events):
+        def annotate_events(self, *, events, time_budget_seconds=45.0):
             raise RuntimeError("endpoint down")
 
-    db.delete_annotations_except(conn, set())  # clear
+    conn.execute("DELETE FROM event_annotations")
     conn.commit()
     assert annotate.annotate_missing(conn, llm=BrokenLLM()) == 1
     rows = db.list_annotations(conn)

@@ -44,6 +44,13 @@ Covers the placement machinery on top of the E1–E13 harness:
 | P12 | corrupted constraint rows (out-of-band edits) never crash replan | `blocked_day_part` with `params='{}'` → replan succeeds |
 | P13 | built-in 60-minute window does not stretch with a longer user constraint window | `subject_gap gap_minutes=240` + fatigue-3 event 200 min prior → no "within 60 min" reason, only the 240′ one |
 | P14 | rank mode: ≤16 LLM calls **and** ≤20 s wall-clock per replan; extra jobs get "LLM budget reached" receipt | 5 × 4 h materials + counting fake → 16 calls, budget receipt on late jobs |
+| P15 | fractional/bool LLM-ish integer params are rejected (`2.9`, `1.5`) | `validate_params` unit tests + REST 422 |
+| P16 | interleave is soft-only; `hard:true` → ValueError → 422, never persisted | direct call + chat-tool dispatch tests |
+| P17 | `blocked_day_part` blocks on interval overlap, not start hour alone | 11:30–12:20 slot vs 12:00–13:00 block → blocked |
+| P18 | "never more than N in a row" phrasing parses | NL parser test |
+| P19 | no feasible slot at all (capacity exhausted) → `unplaced` receipt, no crash | 0.5 h capacity → replan returns `unplaced ≥ 1` |
+| P20 | annotations: zero-budget path skips LLM entirely; chunks of 15 validated independently | exploding fake w/ budget=0; 32-event batch → 3 create calls |
+| P21 | `force` re-annotation preserves `source='user'` rows | annotate endpoint with a pre-seeded user annotation |
 
 Chat flows — `tests/test_chat_constraints.py`: LLM tool path (add/list/remove_constraint tool calls) and the offline NL path ("avoid math right after math class" creates a `subject_gap` rule and re-plans open goals, no LLM key needed; unknown subjects get guidance instead of a dead rule; identical rules dedupe).
 Constraint validation/NL parsing — `tests/test_constraints.py`; REST CRUD — `tests/test_constraints_api.py` (422s, 404s, `smart_placement`/`llm_placement_mode` key validation); LLM skill contracts — `tests/test_llm_placement.py`.

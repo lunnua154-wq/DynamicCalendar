@@ -381,6 +381,13 @@ function renderMobileList() {
         ? `· ${job.duration_min != null ? job.duration_min + "m" : ""} ${job.kind === "revision" ? "R" + job.revision_round : "learn"}`
         : "";
       info.appendChild(meta);
+      if (job && job.placement_note) {
+        const why = document.createElement("div");
+        why.className = "text-[9px] text-indigo-400 truncate";
+        why.textContent = `${job.placement_source === "llm" ? "✨ " : ""}why: ${job.placement_note}`;
+        why.title = job.placement_note;
+        info.appendChild(why);
+      }
       row.appendChild(info);
 
       if (job && !done) {

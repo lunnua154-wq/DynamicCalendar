@@ -34,9 +34,10 @@ upload (multipart)
 POST /api/ics/import (multipart file)
   → merge events by ICS UID (same transaction, all-or-nothing)
   → annotate external events lacking an annotation (app/annotate.py):
-      one batched LLM call if an endpoint is configured, else duration/keyword
-      heuristics — always available, never blocks the import
-      (or POST /api/events/annotate {"force": true} to re-annotate everything)
+      HEURISTIC only — deterministic, instant, never able to stall the HTTP
+      response; LLM annotation is available on demand via
+      POST /api/events/annotate {"force": true} (chunked, ~45 s budget)
+      (pre-upgrade databases are heuristic-backfilled once at app startup)
   → engine.replan() for every open goal
     (pinned jobs that now overlap an imported external are deleted
      and re-placed unpinned; pinned jobs that don't overlap stay put)
@@ -88,17 +89,22 @@ capacity_slots(day) = settings.daily_capacity_hours (dynamic setting)
 remaining = goal.effort_total − done_effort(goal)
 
 1. KEEP: pending jobs on today's date and pinned jobs stay put (no churn)
-2. PLACE: for each job to place, enumerate EVERY valid candidate slot from today
-   → deadline, score each candidate, and take the winner:
+2. PLACE: for each job to place, enumerate candidates from today
+   → deadline, score each, and take the winner:
      • hard gates: overlap / capacity / deadline / done-pinned (never relaxed
        except the global relaxation rule, below)
      • soft penalty: built-in placement wisdom (60-minute fatigue/subject
        adjacency window, touching-chain job adjacency) + stored constraint rows
-     • chooser=None → argmin(penalty, start)   (smart_placement=off → earliest)
+     • chooser=None → argmin(penalty, start); penalties ≥ 0, so the first
+       penalty-0 VALID candidate is optimal and the scan stops early
      • chooser set  → LLM picks from a shortlist (2 earliest + 2 lowest penalty,
-       ≤4); invalid or raising → deterministic argmin
+       ≤4); revisions share the same 16-call / 20 s budget
+     • chooser failure/out-of-range → deterministic argmin fallback
      • relaxation rule: if hard constraints exclude EVERY candidate, they
        degrade to soft and the job is placed anyway (placement_note records it)
+     • if even relaxed candidates can't fit (capacity/deadline exhausted),
+       the material is not silently dropped: engine returns `unplaced` > 0
+       and the replan receipt surfaces it
    Learn work is placed least-recently-used-subject first (round-robin across
    subjects) instead of per-material packing, so interleaving works; materials
    keep creation order within a subject round.
@@ -128,11 +134,12 @@ Invariants:
 ICS import ──► annotate_missing()               (app/annotate.py)
             ├─ heuristic (offline, always): fatigue (≥3h→3, ≥2h→2, ≥45m→1, +1 lab;
             │   all-day → 0) + subject (keyword/regex map)
-            └─ LLM batched call (if configured), per-item validated,
-                chunks of 15 events; per-chunk failure degrades to heuristic
+            └─ LLM chunks of 15 (explicit `POST /api/events/annotate`, ~45 s
+                budget, per-chunk failure isolation; per-item validated).
+                App startup and ICS import are heuristic-only.
             ▼
    event_annotations table  ◄── POST /api/events/annotate {force?}
-   (also backfilled once at app startup for pre-upgrade databases)
+   (app startup backfills pre-upgrade databases, heuristic-only)
 
 replan ──► candidates = all hard-valid slots (today → deadline)
         ──► score_slot(...)                     (app/constraints.py)
