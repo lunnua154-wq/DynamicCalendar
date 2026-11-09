@@ -1,10 +1,11 @@
-"""OpenAI-compatible tool registry for the v0.1 chat skill.
+"""OpenAI-compatible tool registry for the chat skill.
 
-Exactly seven narrow tools: five read-only (list_goals, list_jobs,
-list_events, list_materials, get_stats) and two bounded writes
-(update_settings, set_material_effort). The engine remains the only
-scheduler — no tool moves jobs or creates/changes external events, and
-external events are read-only.
+Ten narrow tools: six read-only (list_goals, list_jobs, list_events,
+list_materials, get_stats, list_constraints) and four bounded writes
+(update_settings, set_material_effort, add_constraint, remove_constraint).
+The engine remains the scheduler of record — tools never move jobs directly;
+constraint writes take effect through a replan, and external events are
+read-only.
 """
 
 from __future__ import annotations
@@ -136,6 +137,91 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_constraints",
+            "description": (
+                "List the scheduling constraints the planner enforces "
+                "(e.g. 'no math right after math class', 'no study within "
+                "60 min of a fatigue-3 event'). Read-only. "
+                "No parameters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_constraint",
+            "description": (
+                "Create a scheduling constraint from the user's request "
+                "(e.g. 'avoid math right after math class'). Known kinds: "
+                "'subject_gap' {subject, gap_minutes 15-240, optional 'hard'}, "
+                "'post_fatigue_buffer' {min_fatigue 1-3, buffer_minutes 15-240, "
+                "optional 'hard'}, 'interleave' {max_consecutive 1-5}, "
+                "'blocked_day_part' {start_hour 0-23, end_hour 0-23, optional 'hard'}. "
+                "Hard constraints exclude candidates (relaxed only if no candidate "
+                "survives); soft constraints just penalise them. Re-plans open goals "
+                "and returns a receipt."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "description": (
+                            "subject_gap | post_fatigue_buffer | interleave | "
+                            "blocked_day_part"
+                        ),
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "Kind-specific parameters, e.g. {\"subject\": \"math\", "
+                            "\"gap_minutes\": 60}. Validated server-side."
+                        ),
+                        "additionalProperties": True,
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Short human-readable description (optional).",
+                    },
+                    "hard": {
+                        "type": "boolean",
+                        "description": "Hard-exclude matching slots instead of penalising (default false).",
+                    },
+                },
+                "required": ["kind", "params"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_constraint",
+            "description": (
+                "Delete a scheduling constraint by id (from list_constraints). "
+                "Re-plans open goals and returns a receipt."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "constraint_id": {
+                        "type": "string",
+                        "description": "Id of the constraint to delete.",
+                    }
+                },
+                "required": ["constraint_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_settings",
             "description": (
                 "Change study settings: daily_capacity_hours (0.5-12) "
@@ -218,6 +304,22 @@ def dispatch(
             return {"materials": actions.list_materials(conn)}
         if name == "get_stats":
             return {"stats": actions.get_stats(conn, goal_id=args.get("goal_id"))}
+        if name == "list_constraints":
+            return {"constraints": actions.list_constraints(conn)}
+        if name == "add_constraint":
+            return actions.add_constraint(
+                conn,
+                kind=_require(args, "kind"),
+                params=args.get("params") or {},
+                label=args.get("label"),
+                hard=args.get("hard", False),
+                source="llm",
+                now_iso=now_iso,
+            )
+        if name == "remove_constraint":
+            return actions.remove_constraint(
+                conn, _require(args, "constraint_id"), now_iso=now_iso
+            )
         if name == "update_settings":
             changes: dict[str, Any] = {}
             for key in ("daily_capacity_hours", "slot_minutes"):

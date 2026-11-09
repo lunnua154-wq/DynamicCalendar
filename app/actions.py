@@ -1,9 +1,9 @@
 """Service-layer actions used by the v0.1 chat tools.
 
 Read-mostly helpers plus two bounded write actions (update_settings,
-set_material_effort). The engine remains the only scheduler:
-set_material_effort triggers an explicit engine.replan, and no tool moves jobs
-or touches external events.
+set_material_effort) and constraint actions (add/list/remove). The engine
+remains the scheduler of record: every write path that changes cognitive load
+or plan shape ends in a replan; no tool moves jobs or touches external events.
 
 Stdlib only — no LLM imports.
 """
@@ -14,7 +14,13 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import db, engine
+from . import db, planner
+from .constraints import (
+    constraint_label,
+    parse_constraint_row,
+    serialise_params,
+    validate_constraint,
+)
 from .config import (
     validate_capacity_hours,
     validate_effort_hours,
@@ -229,7 +235,7 @@ def set_material_effort(
     validate_effort_hours(float(hours))
     material = db.update_material(conn, material_id, effort_hours=float(hours))
     if material.get("goal_id"):
-        engine.replan(conn, material["goal_id"], now_iso)
+        planner.replan(conn, material["goal_id"], now_iso)
     return material
 
 
@@ -258,3 +264,100 @@ def update_settings(
     for key, value in updated.items():
         db.update_setting(conn, key, json.dumps(value), "llm")
     return {"updated": updated}
+
+
+# ----------------------------------------------------------- constraints
+
+def _replan_open_goals(conn, now_iso: str) -> int:
+    count = 0
+    for goal in db.list_goals(conn):
+        if goal["status"] == "open":
+            planner.replan(conn, goal["id"], now_iso)
+            count += 1
+    return count
+
+
+def _constraint_out(row: dict) -> dict:
+    parsed = parse_constraint_row(row)
+    if parsed is None:
+        # broken row (out-of-band edit): surface it as unparsed instead of crashing
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "params": {},
+            "hard": bool(row["hard"]),
+            "enabled": bool(row["enabled"]),
+            "source": row["source"],
+            "label": row.get("label") or row["kind"],
+            "created_at": row["created_at"],
+            "broken": True,
+        }
+    return {
+        "id": parsed["id"],
+        "kind": parsed["kind"],
+        "params": parsed["params"],
+        "hard": parsed["hard"],
+        "enabled": bool(row["enabled"]),
+        "source": row["source"],
+        "label": parsed["label"],
+        "created_at": row["created_at"],
+    }
+
+
+def list_constraints(conn) -> list[dict]:
+    """All constraints, newest first (parse failures degrade to raw params)."""
+    return [_constraint_out(row) for row in db.list_constraints(conn)]
+
+
+def add_constraint(
+    conn,
+    *,
+    kind: Any,
+    params: Any,
+    label: Any = None,
+    hard: Any = False,
+    source: str = "user",
+    now_iso: str | None = None,
+) -> dict:
+    """Validate + persist a constraint, then replan open goals.
+
+    ``params`` may arrive as a dict (chat tools) or a JSON string. ``source``
+    is 'user' for the REST API and 'llm' for the chat tool.
+    """
+    now_iso = now_iso or _now_utc()
+    if isinstance(params, str):
+        params = json.loads(params or "{}")
+    kind_text, params_norm = validate_constraint(kind, params)
+    params_serialized = serialise_params(params_norm)
+    for row in db.list_constraints(conn):
+        if row["kind"] == kind_text and row["params"] == params_serialized:
+            return {"constraint": _constraint_out(row), "replanned_goals": 0, "existing": True}
+    label_text = str(label).strip()[:120] if label else constraint_label(kind_text, params_norm)
+    constraint_id = db.create_constraint(
+        conn,
+        kind=kind_text,
+        params=params_serialized,
+        hard=bool(hard),
+        source=source if source in ("user", "llm") else "user",
+        label=label_text,
+    )
+    replanned = _replan_open_goals(conn, now_iso)
+    row = next(
+        r for r in db.list_constraints(conn) if r["id"] == constraint_id
+    )
+    return {
+        "constraint": _constraint_out(row),
+        "replanned_goals": replanned,
+    }
+
+
+def remove_constraint(conn, constraint_id: Any, now_iso: str | None = None) -> dict:
+    """Delete a constraint by id; replan open goals. Raises NotFoundError."""
+    now_iso = now_iso or _now_utc()
+    cid = str(constraint_id or "").strip()
+    if not cid:
+        raise ValueError("constraint_id is required")
+    if not db.delete_constraint(conn, cid):
+        raise NotFoundError(f"constraint {cid} not found")
+    replanned = _replan_open_goals(conn, now_iso)
+    return {"deleted": cid, "replanned_goals": replanned}

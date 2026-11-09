@@ -35,6 +35,9 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "llm_model": "",
     "llm_api_key": "",
     "default_effort_hours": "1.0",
+    # Smart placement (deterministic scorer) and optional LLM slot ranking.
+    "smart_placement": "on",
+    "llm_placement_mode": "off",
     # Cloudflare OCR (M4) — off by default; opt-in via settings.
     "ocr_provider": "off",
     "cf_account_id": "",
@@ -69,6 +72,13 @@ class Settings:
     ocr_min_chars: int = 40
     # Local clock offset used to lay out study windows (storage stays UTC).
     utc_offset_minutes: int = 0
+    # Smart placement: 'on' = penalised candidate scoring in the engine;
+    # 'off' = legacy earliest-free-slot scoring. Stored constraints still
+    # apply in both modes.
+    smart_placement: str = "on"
+    # LLM slot selection: 'off' (default) or 'rank' (LLM picks from a
+    # hard-valid shortlist; deterministic fallback on any failure).
+    llm_placement_mode: str = "off"
 
     @property
     def llm_enabled(self) -> bool:
@@ -144,6 +154,20 @@ def validate_llm_model(value: str) -> str:
     return text
 
 
+def validate_smart_placement(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text not in ("on", "off"):
+        raise ValidationError("smart_placement must be 'on' or 'off'")
+    return text
+
+
+def validate_llm_placement_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text not in ("off", "rank"):
+        raise ValidationError("llm_placement_mode must be 'off' or 'rank'")
+    return text
+
+
 def host_utc_offset_minutes() -> int:
     """Offset of the host clock from UTC, in minutes (e.g. +480 for UTC+8)."""
     offset = datetime.now(timezone.utc).astimezone().utcoffset()
@@ -196,5 +220,11 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
         ),
         utc_offset_minutes=(
             int(_decode_setting(values.get("utc_offset_minutes", "")) or 0)
+        ),
+        smart_placement=validate_smart_placement(
+            _decode_setting(values.get("smart_placement", "on")) or "on"
+        ),
+        llm_placement_mode=validate_llm_placement_mode(
+            _decode_setting(values.get("llm_placement_mode", "off")) or "off"
         ),
     )
