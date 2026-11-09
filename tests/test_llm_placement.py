@@ -36,9 +36,9 @@ def _settings(llm_enabled=True, **overrides):
 def _fake_client(payload: str):
     fake = MagicMock()
     completions = fake.chat.completions
-    # code calls .with_options(max_retries=0, timeout=…).create(...): make
-    # with_options return the same fake completions object
-    completions.with_options.return_value = completions
+    # code calls client.with_options(max_retries=0, timeout=…).chat.completions.create(...):
+    # make client.with_options return the same fake client
+    fake.with_options.return_value = fake
     completions.create.return_value.choices[0].message.content = payload
     return fake
 

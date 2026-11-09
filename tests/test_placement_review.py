@@ -422,7 +422,7 @@ def test_annotate_chunks_over_15_events():
         )
 
     fake = MagicMock()
-    fake.chat.completions.with_options.return_value = fake.chat.completions
+    fake.with_options.return_value = fake
     fake.chat.completions.create.side_effect = fake_create
     client = LLMClient(settings)
     client._client = fake

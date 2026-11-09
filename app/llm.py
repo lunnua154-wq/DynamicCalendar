@@ -187,9 +187,9 @@ class LLMClient:
         try:
             # No retries for a diagnostic: a dead endpoint should answer in
             # well under a second instead of backing off three times.
-            completions = client.chat.completions.with_options(
+            completions = client.with_options(
                 max_retries=0, timeout=timeout
-            )
+            ).chat.completions
             resp = completions.create(
                 model=self.settings.llm_model,
                 messages=[{"role": "user", "content": "Reply with the single word: pong"}],
@@ -639,9 +639,9 @@ class LLMClient:
             "Candidate slots:\n" + "\n".join(lines) + "\n"
             f"choice must be an integer between 0 and {len(candidates) - 1}."
         )
-        resp = self.client.chat.completions.with_options(
+        resp = self.client.with_options(
             max_retries=0, timeout=15
-        ).create(  # type: ignore[union-attr]
+        ).chat.completions.create(  # type: ignore[union-attr]
             model=self.settings.llm_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
@@ -700,9 +700,9 @@ class LLMClient:
                 "Use 'general' when no subject is discernible.\n"
                 f"Events: {json.dumps(payload)}"
             )
-            resp = self.client.chat.completions.with_options(
+            resp = self.client.with_options(
                 max_retries=0, timeout=30
-            ).create(  # type: ignore[union-attr]
+            ).chat.completions.create(  # type: ignore[union-attr]
                 model=self.settings.llm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
