@@ -58,12 +58,32 @@ def _client_at(path):
     return TestClient(app)
 
 
+def _utc_in(days: int, hour: int = 14, minute: int = 0) -> str:
+    """A UTC timestamp ``days`` from now.
+
+    These tests mix real-clock endpoints (chat context, stats, the move "past"
+    check) with seeded fixtures, so fixture times must be relative to today:
+    hard-coded 2026 dates silently turn into "the past" as the calendar moves on.
+    """
+    stamp = datetime.now(timezone.utc) + timedelta(days=days)
+    return stamp.replace(hour=hour, minute=minute, second=0, microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+_SEED_DEADLINE = _utc_in(45, 0)
+_SEED_SLOT_START = _utc_in(1, 14)
+_SEED_SLOT_END = _utc_in(1, 14, 50)
+_MOVE_START = _utc_in(2, 14)
+_MOVE_END = _utc_in(2, 14, 50)
+
+
 def _seed_goal_material_job(
     path,
-    deadline="2026-12-18T00:00:00Z",
+    deadline=_SEED_DEADLINE,
     effort=1.0,
-    slot_start="2026-11-09T14:00:00Z",
-    slot_end="2026-11-09T14:50:00Z",
+    slot_start=_SEED_SLOT_START,
+    slot_end=_SEED_SLOT_END,
 ):
     conn = db.connect(path)
     db.init_db(conn)
@@ -349,14 +369,14 @@ def test_move_success_sets_pinned_and_replan_keeps_slot():
         gid, _mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
         r = c.post(f"/api/jobs/{jid}/move", json={
-            "slot_start": "2026-11-10T14:00:00Z",
-            "slot_end": "2026-11-10T14:50:00Z",
+            "slot_start": _MOVE_START,
+            "slot_end": _MOVE_END,
         })
         assert r.status_code == 200, r.text
         body = r.json()
         assert "job" in body and "moved_jobs" in body
         assert body["job"]["pinned"] == 1
-        assert body["job"]["slot_start"] == "2026-11-10T14:00:00Z"
+        assert body["job"]["slot_start"] == _MOVE_START
 
         # replan keeps the pinned slot
         r = c.post(f"/api/goals/{gid}/replan")
@@ -364,7 +384,7 @@ def test_move_success_sets_pinned_and_replan_keeps_slot():
         r2 = c.get("/api/jobs")
         jobs = {j["id"]: j for j in r2.json()}
         assert jobs[jid]["pinned"] == 1
-        assert jobs[jid]["slot_start"] == "2026-11-10T14:00:00Z"
+        assert jobs[jid]["slot_start"] == _MOVE_START
     finally:
         os.unlink(path)
 
@@ -374,12 +394,14 @@ def test_move_accepts_milliseconds():
     try:
         gid, _mid, jid = _seed_goal_material_job(path)
         c = _client_at(path)
+        start_ms = _MOVE_START.replace("Z", ".500Z")
+        end_ms = _MOVE_END.replace("Z", ".500Z")
         r = c.post(f"/api/jobs/{jid}/move", json={
-            "slot_start": "2026-11-10T14:00:00.500Z",
-            "slot_end": "2026-11-10T14:50:00.500Z",
+            "slot_start": start_ms,
+            "slot_end": end_ms,
         })
         assert r.status_code == 200, r.text
-        assert r.json()["job"]["slot_start"] == "2026-11-10T14:00:00Z"
+        assert r.json()["job"]["slot_start"] == _MOVE_START
     finally:
         os.unlink(path)
 
@@ -392,12 +414,12 @@ def test_move_rejects_done_past_after_deadline_overlap():
 
         # done job cannot be moved
         conn = db.connect(path)
-        db.update_job(conn, jid, status="done", done_at="2026-11-09T14:50:00Z")
+        db.update_job(conn, jid, status="done", done_at=_utc_in(0, 9, 55))
         conn.commit()
         conn.close()
         r = c.post(f"/api/jobs/{jid}/move", json={
-            "slot_start": "2026-11-10T14:00:00Z",
-            "slot_end": "2026-11-10T14:50:00Z",
+            "slot_start": _MOVE_START,
+            "slot_end": _MOVE_END,
         })
         assert r.status_code == 409, r.text
 
@@ -414,8 +436,8 @@ def test_move_rejects_done_past_after_deadline_overlap():
             assert r.status_code == 409, r.text
             # after goal deadline -> 409
             r = c2.post(f"/api/jobs/{jid2}/move", json={
-                "slot_start": "2026-12-20T10:00:00Z",
-                "slot_end": "2026-12-20T10:50:00Z",
+                "slot_start": _utc_in(50, 10),
+                "slot_end": _utc_in(50, 10, 50),
             })
             assert r.status_code == 409, r.text
         finally:
@@ -437,7 +459,7 @@ def test_move_overlapping_exam_is_409():
         import io
         ics_sync.import_ics(io.BytesIO(data), db_path=path)
         conn.commit()
-        gid = db.create_goal(conn, title="G1", deadline="2026-12-18T00:00:00Z")
+        gid = db.create_goal(conn, title="G1", deadline=_SEED_DEADLINE)
         mid = db.create_material(
             conn, goal_id=gid, topic_id=None, filename="m.md",
             original_path="/x/m.md", markdown_path="/x/m.md",
@@ -575,7 +597,7 @@ def test_upload_with_goal_creates_jobs_immediately():
     try:
         conn = db.connect(path)
         db.init_db(conn)
-        gid = db.create_goal(conn, title="G1", deadline="2026-12-18T00:00:00Z")
+        gid = db.create_goal(conn, title="G1", deadline=_SEED_DEADLINE)
         conn.commit()
         conn.close()
 
@@ -666,7 +688,7 @@ def test_attach_only_ready_and_replan():
     try:
         conn = db.connect(path)
         db.init_db(conn)
-        gid = db.create_goal(conn, title="G1", deadline="2026-12-18T00:00:00Z")
+        gid = db.create_goal(conn, title="G1", deadline=_SEED_DEADLINE)
         mid = db.create_material(
             conn, goal_id=None, topic_id=None, filename="m.md",
             original_path="/x/m.md", markdown_path="/x/m.md",
@@ -703,7 +725,7 @@ def test_attach_ready_bulk():
     try:
         conn = db.connect(path)
         db.init_db(conn)
-        gid = db.create_goal(conn, title="G1", deadline="2026-12-18T00:00:00Z")
+        gid = db.create_goal(conn, title="G1", deadline=_SEED_DEADLINE)
         gid2 = db.create_goal(conn, title="G2", deadline="2026-12-18T00:00:00Z")
         ids: dict[str, str] = {}
         for name, status, goal in [
@@ -754,7 +776,7 @@ def test_topics_list_rename_merge_attach():
     try:
         conn = db.connect(path)
         db.init_db(conn)
-        gid = db.create_goal(conn, title="G1", deadline="2026-12-18T00:00:00Z")
+        gid = db.create_goal(conn, title="G1", deadline=_SEED_DEADLINE)
         mid = db.create_material(
             conn, goal_id=gid, topic_id=None, filename="m.md",
             original_path="/x/m.md", markdown_path="/x/m.md",
@@ -950,18 +972,19 @@ def test_stats_with_past_jobs_returns_200():
 
 def test_by_day_includes_yesterday():
     path = _temp_db()
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
     gid, mid, jid = _seed_goal_material_job(
         path,
-        slot_start="2026-11-06T09:00:00Z",
-        slot_end="2026-11-06T09:50:00Z",
+        slot_start=f"{yesterday}T09:00:00Z",
+        slot_end=f"{yesterday}T09:50:00Z",
     )
     conn = db.connect(path)
-    db.update_job(conn, jid, status="done", done_at="2026-11-06T09:55:00Z")
+    db.update_job(conn, jid, status="done", done_at=f"{yesterday}T09:55:00Z")
     conn.commit()
     conn.close()
     c = _client_at(path)
     body = c.get("/api/stats").json()
-    day = next(d for d in body["by_day"] if d["date"] == "2026-11-06")
+    day = next(d for d in body["by_day"] if d["date"] == yesterday)
     assert day["done_min"] == 50
 
 
@@ -971,7 +994,7 @@ def test_move_onto_pending_job_returns_409():
     conn = db.connect(path)
     eid_b = db.create_event(
         conn, kind="study", title="B",
-        dtstart="2026-11-10T16:00:00Z", dtend="2026-11-10T16:50:00Z", locked=0,
+        dtstart=_MOVE_START, dtend=_MOVE_END, locked=0,
     )
     jid_b = db.create_job(
         conn, event_id=eid_b, goal_id=gid, material_id=mid,
@@ -982,7 +1005,7 @@ def test_move_onto_pending_job_returns_409():
     c = _client_at(path)
     r = c.post(
         f"/api/jobs/{jid_a}/move",
-        json={"slot_start": "2026-11-10T16:00:00Z", "slot_end": "2026-11-10T16:50:00Z"},
+        json={"slot_start": _MOVE_START, "slot_end": _MOVE_END},
     )
     assert r.status_code == 409, r.text
 
@@ -993,7 +1016,7 @@ def test_move_slot_end_before_start_returns_422():
     c = _client_at(path)
     r = c.post(
         f"/api/jobs/{jid}/move",
-        json={"slot_start": "2026-11-10T17:00:00Z", "slot_end": "2026-11-10T16:00:00Z"},
+        json={"slot_start": _MOVE_END, "slot_end": _MOVE_START},
     )
     assert r.status_code == 422, r.text
 
@@ -1008,7 +1031,7 @@ def test_moved_conflicted_job_becomes_pending_and_pinned():
     c = _client_at(path)
     r = c.post(
         f"/api/jobs/{jid}/move",
-        json={"slot_start": "2026-11-20T15:00:00Z", "slot_end": "2026-11-20T15:50:00Z"},
+        json={"slot_start": _utc_in(10, 15), "slot_end": _utc_in(10, 15, 50)},
     )
     assert r.status_code == 200, r.text
     job = r.json()["job"]
@@ -1077,7 +1100,7 @@ def test_settings_api_key_is_write_only():
 
 def test_ics_import_replans_open_goals():
     c = _client()
-    g = c.post("/api/goals", json={"title": "Exam prep", "deadline": "2026-12-18T00:00:00Z"}).json()
+    g = c.post("/api/goals", json={"title": "Exam prep", "deadline": _SEED_DEADLINE}).json()
     with open("samples/sample_calendar.ics", "rb") as fh:
         r = c.post("/api/ics/import", files={"file": ("sample.ics", fh, "text/calendar")})
     assert r.status_code == 200, r.text
@@ -1107,7 +1130,7 @@ def test_jobs_include_material_title():
 
 def test_topics_include_file_count_and_member_effort():
     c = _client()
-    g = c.post("/api/goals", json={"title": "Topics shape", "deadline": "2026-12-18T00:00:00Z"}).json()
+    g = c.post("/api/goals", json={"title": "Topics shape", "deadline": _SEED_DEADLINE}).json()
     c.post(
         "/api/inbox/upload",
         files={"files": ("shape.md", b"# Shape\nsome unique content for the topics shape test", "text/markdown")},
