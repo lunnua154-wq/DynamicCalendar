@@ -37,6 +37,18 @@ except Exception:  # pragma: no cover - tools module always present
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*", re.IGNORECASE)
 
+#: Per-request bounds for the LLM client. Retries are deliberately zero: with the
+#: SDK defaults an unreachable endpoint blocked chat for ~15 s before falling
+#: back, and every skill already degrades to a deterministic answer on failure.
+LLM_REQUEST_TIMEOUT_SECONDS = 60.0
+LLM_MAX_RETRIES = 0
+
+#: Failures that removing the tool definitions cannot fix: retrying plain chat
+#: against the same endpoint would just double the wait before the fallback.
+UNRECOVERABLE_WITHOUT_TOOLS = frozenset(
+    {"connection", "timeout", "auth", "not_found", "http_error", "rate_limit"}
+)
+
 #: Deterministic effort baseline: ~200 wpm reading with review/practice passes.
 _EFFORT_WORDS_PER_HOUR = 600
 _EFFORT_MIN_HOURS = 0.5
@@ -157,6 +169,12 @@ class LLMClient:
                     # The OpenAI SDK requires a non-empty key even for local
                     # servers (llama.cpp/Ollama) that ignore authentication.
                     api_key=self.settings.llm_api_key or "not-needed",
+                    # Bound every request: the SDK default retries twice with
+                    # exponential backoff, which turned an unreachable endpoint
+                    # into a ~15 s chat wait before the offline fallback. A local
+                    # model can be slow, so the per-attempt timeout stays generous.
+                    timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+                    max_retries=LLM_MAX_RETRIES,
                 )
             except Exception:  # pragma: no cover - malformed endpoint config
                 # Never let a bad endpoint configuration escape the skills'
@@ -375,6 +393,7 @@ class LLMClient:
         now_iso: str | None = None,
     ) -> dict[str, Any]:
         error: dict[str, Any] | None = None
+        tool_failure_kind: str | None = None
         if self.client is not None:
             # 1) full tool loop when a DB connection is available
             if conn is not None and _TOOLS_OK:
@@ -388,13 +407,17 @@ class LLMClient:
                     )
                 except Exception as exc:  # e.g. endpoint without tool support
                     error = _record_error("chat", exc)
-            # 2) plain chat: works with endpoints that do not support tools
-            try:
-                out = self._chat_llm(message=message, history=history, context=context)
-                clear_last_error()
-                return out
-            except Exception as exc:  # network/LLM failure -> offline reply
-                error = _record_error("chat", exc)
+                    tool_failure_kind = _error_kind(exc)
+            # 2) plain chat: only when the failure could be tool-specific.
+            # A dead/unreachable endpoint fails identically without tools, so
+            # retrying there would just double the wait before the fallback.
+            if tool_failure_kind not in UNRECOVERABLE_WITHOUT_TOOLS:
+                try:
+                    out = self._chat_llm(message=message, history=history, context=context)
+                    clear_last_error()
+                    return out
+                except Exception as exc:  # network/LLM failure -> offline reply
+                    error = _record_error("chat", exc)
         out = self._chat_fallback(message=message, context=context)
         if error is not None:
             # The reply is still useful, but the client must be able to tell
