@@ -69,6 +69,45 @@ def _as_subject(value: Any) -> str:
     return text
 
 
+def as_fatigue(value: Any) -> int:
+    """Coerce an annotation fatigue value to a safe int in 0..3.
+
+    ``bool`` -> 0; a non-integral float or an unparseable string -> 0;
+    integral values are clamped to 0..3. Never raises, so a corrupt
+    annotation row can never abort a replan.
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, min(3, value))
+    if isinstance(value, float):
+        if not value.is_integer():
+            return 0
+        return max(0, min(3, int(value)))
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0
+        try:
+            num = float(text)
+        except ValueError:
+            return 0
+        if not num.is_integer():
+            return 0
+        return max(0, min(3, int(num)))
+    return 0
+
+
+def as_subject(value: Any) -> str:
+    """Coerce an annotation subject to a safe normalized string.
+
+    Strip, lowercase and collapse whitespace; empty -> "general". Never raises.
+    """
+    text = str(value or "").strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text or "general"
+
+
 def validate_params(kind: str, params: Any) -> dict[str, Any]:
     """Validate ``params`` for ``kind``; returns a normalised dict.
 
@@ -208,8 +247,8 @@ def score_slot(
 
     for ext in externals:
         end = ext["end"]
-        fatigue = int(ext.get("fatigue") or 0)
-        ext_subject = (ext.get("subject") or "").lower()
+        fatigue = as_fatigue(ext.get("fatigue"))
+        ext_subject = as_subject(ext.get("subject"))
         if smart and fatigue >= 2 and _in_after_window(slot_start, end, ADJACENCY_WINDOW_MINUTES):
             points = BUILTIN_FATIGUE_PENALTY_3 if fatigue >= 3 else BUILTIN_FATIGUE_PENALTY_2
             penalise(points, f"within 60 min of a fatigue-{fatigue} event", False)
@@ -229,7 +268,7 @@ def score_slot(
         hard = bool(con.get("hard"))
         if kind == "post_fatigue_buffer":
             for ext in externals:
-                if int(ext.get("fatigue") or 0) >= int(params["min_fatigue"]):
+                if as_fatigue(ext.get("fatigue")) >= int(params["min_fatigue"]):
                     if _in_after_window(slot_start, ext["end"], int(params["buffer_minutes"])):
                         penalise(
                             POST_FATIGUE_PENALTY,
@@ -294,9 +333,10 @@ def job_adjacency_penalty(
     if smart and last_subject == primary and slot_start == last_end:
         penalty += BUILTIN_INTERLEAVE_PENALTY
         reasons.append(f"back-to-back {primary} jobs")
-    interleave = next((c for c in constraints if c["kind"] == "interleave"), None)
-    if interleave is not None:
-        n = int(interleave["params"]["max_consecutive"])
+    interleave_rows = [c for c in constraints if c["kind"] == "interleave"]
+    if interleave_rows:
+        # Strictest enabled row wins: the lowest max_consecutive binds.
+        n = min(int(c["params"]["max_consecutive"]) for c in interleave_rows)
         run = 0
         cursor = slot_start
         for start, end, subject in reversed(entries):

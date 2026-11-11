@@ -211,8 +211,8 @@ def replan(
             {
                 "es": es,
                 "ee": ee,
-                "subject": str(ann.get("subject") or "general"),
-                "fatigue": int(ann.get("fatigue") or 0),
+                "subject": constraints_mod.as_subject(ann.get("subject")),
+                "fatigue": constraints_mod.as_fatigue(ann.get("fatigue")),
                 "title": str(e.get("title") or ""),
             }
         )
@@ -650,9 +650,9 @@ def replan(
         if slot is None:
             # No candidate exists anywhere before the deadline — the capacity,
             # not a constraint of preference, is exhausted. The material is
-            # not dropped silently: `unplaced` counts it and surfaces on the
-            # replan receipt.
-            unplaced += 1
+            # not dropped silently: `unplaced` counts the lost demand
+            # (remaining unschedulable slots) and surfaces on the receipt.
+            unplaced += item["remaining"]
             queue.pop(pick_index)
             continue
         slot_start, slot_end, p_source, p_note = slot

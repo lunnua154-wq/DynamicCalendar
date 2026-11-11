@@ -636,6 +636,7 @@ def upsert_annotation(
           source = excluded.source,
           note = excluded.note,
           updated_at = excluded.updated_at
+        WHERE event_annotations.source != 'user' OR excluded.source = 'user'
         """,
         (event_id, subject, int(fatigue), source, note, now_utc()),
     )
