@@ -7,11 +7,15 @@ Routes mirror docs/API.md (M0–M3). The database path defaults to
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -20,7 +24,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, engine, ics_sync, ingest, llm as llm_mod
+from . import actions, annotate, db, ics_sync, ingest, llm as llm_mod, planner
+
 from .config import (
     DEFAULT_SETTINGS,
     parse_settings,
@@ -29,7 +34,9 @@ from .config import (
     validate_effort_hours,
     validate_llm_base_url,
     validate_llm_model,
+    validate_llm_placement_mode,
     validate_slot_minutes,
+    validate_smart_placement,
     validate_utc_offset_minutes,
 )
 from .errors import ConflictError, DynaCalendarError, NotFoundError, ValidationError
@@ -60,7 +67,27 @@ def _page(name: str) -> Path:
     return WEB_DIR / name
 
 
-app = FastAPI(title="DynaCalendar")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Backfill annotations for locked externals that lack one (e.g. all
+    pre-upgrade imports) once at app start. Heuristic only — deterministic,
+    instant, offline-safe; never blocks startup (``_get_conn`` resolved at call
+    time). LLM annotation is available via POST /api/events/annotate."""
+    try:
+        conn = _get_conn()
+        try:
+            with conn:
+                annotate.annotate_missing(conn, llm=None, time_budget_seconds=0.0)
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "startup annotation backfill failed; continuing without it", exc_info=True
+        )
+    yield
+
+
+app = FastAPI(title="DynaCalendar", lifespan=_lifespan)
 
 # The app is served same-origin (FastAPI serves web/dist, and the Vite dev
 # server proxies /api), so no cross-origin browser access is expected in
@@ -349,6 +376,8 @@ def list_events(from_: str | None = Query(None, alias="from"), to: str | None = 
                     "revision_round": job["revision_round"],
                     "duration_min": job["duration_min"],
                     "pinned": job["pinned"],
+                    "placement_source": job.get("placement_source"),
+                    "placement_note": job.get("placement_note"),
                 }
                 if not item.get("title") and material.get("filename"):
                     item["title"] = material["filename"]
@@ -362,16 +391,23 @@ def list_events(from_: str | None = Query(None, alias="from"), to: str | None = 
 async def ics_import(file: UploadFile = File(...)):
     # import_ics manages its own connection (all-or-nothing import).
     result = ics_sync.import_ics(file.file, db_path=DEFAULT_DB_PATH)
-    # New/changed external events are hard constraints: replan every open
-    # goal so pending (and, where the import clobbers them, pinned) jobs
-    # never silently overlap the imported schedule.
+    # New/changed external events are hard constraints: annotate the ones the
+    # planner hasn't seen yet (batched LLM call when configured, heuristic
+    # otherwise), then replan every open goal so pending (and, where the import
+    # clobbers them, pinned) jobs never silently overlap the imported schedule.
     conn = _get_conn()
     try:
         with conn:
+            # heuristic-only: annotation must never stall an HTTP response.
+            # LLM annotation is available via POST /api/events/annotate.
+            annotated = annotate.annotate_missing(conn, llm=None, time_budget_seconds=0.0)
             open_goals = [g for g in db.list_goals(conn) if g["status"] == "open"]
             for g in open_goals:
-                engine.replan(conn, g["id"], _now_utc())
+                # Import-time replans must not hold the write lock for LLM
+                # ranking; deterministic scoring still applies.
+                planner.replan(conn, g["id"], _now_utc(), allow_llm_chooser=False)
         result = dict(result)
+        result["annotated"] = annotated
         result["replanned_goals"] = [g["id"] for g in open_goals]
         return result
     finally:
@@ -428,7 +464,7 @@ async def create_goal(request: Request):
             goal_id = db.create_goal(
                 conn, title=title, deadline=deadline, exam_event_id=exam_event_id
             )
-            engine.replan(conn, goal_id, _now_utc())
+            planner.replan(conn, goal_id, _now_utc())
         return _goal_with_progress(conn, goal_id)
     finally:
         conn.close()
@@ -440,11 +476,12 @@ def replan_goal(goal_id: str):
     try:
         with conn:
             db.get_goal(conn, goal_id)  # 404 if missing
-            result = engine.replan(conn, goal_id, _now_utc())
+            result = planner.replan(conn, goal_id, _now_utc())
         return {
             "moved_jobs": result["moved_jobs"],
             "revisions_added": result["revisions_added"],
             "moved_count": len(result["moved_jobs"]),
+            "unplaced": result.get("unplaced", 0),
         }
     finally:
         conn.close()
@@ -480,10 +517,11 @@ def complete_job(job_id: str):
             if job["status"] in ("skipped", "conflicted"):
                 raise ConflictError(f"cannot complete a {job['status']} job")
             db.update_job(conn, job_id, status="done", done_at=_now_utc())
-            result = engine.replan(conn, job["goal_id"], _now_utc())
+            result = planner.replan(conn, job["goal_id"], _now_utc())
         return {
             "replanned": result["moved_jobs"],
             "revisions_added": result["revisions_added"],
+            "unplaced": result.get("unplaced", 0),
         }
     finally:
         conn.close()
@@ -539,8 +577,12 @@ async def move_job(job_id: str, request: Request):
             if was_conflicted:
                 job_updates["status"] = "pending"
             db.update_job(conn, job_id, **job_updates)
-            result = engine.replan(conn, job["goal_id"], now_str)
-        return {"job": db.get_job(conn, job_id), "moved_jobs": result["moved_jobs"]}
+            result = planner.replan(conn, job["goal_id"], now_str)
+        return {
+            "job": db.get_job(conn, job_id),
+            "moved_jobs": result["moved_jobs"],
+            "unplaced": result.get("unplaced", 0),
+        }
     finally:
         conn.close()
 
@@ -554,7 +596,7 @@ def skip_job(job_id: str):
             if job["status"] == "done":
                 raise ConflictError("cannot skip a done job")
             db.update_job(conn, job_id, status="skipped")
-            engine.replan(conn, job["goal_id"], _now_utc())
+            planner.replan(conn, job["goal_id"], _now_utc())
         return db.get_job(conn, job_id)
     finally:
         conn.close()
@@ -568,7 +610,7 @@ async def inbox_upload(
     goal_id: str = Form(None),
 ):
     """Upload + ingest files: store_upload() + process_material() per file,
-    then one engine.replan() for the goal if goal_id is supplied."""
+    then one planner.replan() for the goal if goal_id is supplied."""
     goal_id = goal_id or None
     conn = _get_conn()
     try:
@@ -670,7 +712,7 @@ async def inbox_upload(
                 # Attach only ready materials (skip duplicate/error) and replan once.
                 for mid in ready_material_ids:
                     db.update_material(conn, mid, goal_id=goal_id)
-                engine.replan(conn, goal_id, _now_utc())
+                planner.replan(conn, goal_id, _now_utc())
         return results
     finally:
         conn.close()
@@ -721,7 +763,7 @@ async def dismiss_material(material_id: str, request: Request):
             material = db.get_material(conn, material_id)  # 404 if missing
             db.update_material(conn, material_id, status=status)
             if material["goal_id"]:
-                engine.replan(conn, material["goal_id"], _now_utc())
+                planner.replan(conn, material["goal_id"], _now_utc())
         return db.get_material(conn, material_id)
     finally:
         conn.close()
@@ -741,7 +783,7 @@ async def set_effort(material_id: str, request: Request):
             material = db.get_material(conn, material_id)  # 404 if missing
             db.update_material(conn, material_id, effort_hours=hours)
             if material["goal_id"]:
-                engine.replan(conn, material["goal_id"], _now_utc())
+                planner.replan(conn, material["goal_id"], _now_utc())
         return db.get_material(conn, material_id)
     finally:
         conn.close()
@@ -770,7 +812,7 @@ async def attach_file(material_id: str, request: Request):
             if old_goal_id and old_goal_id != goal_id:
                 goals_to_replan.add(old_goal_id)
             for gid in goals_to_replan:
-                engine.replan(conn, gid, _now_utc())
+                planner.replan(conn, gid, _now_utc())
         return db.get_material(conn, material_id)
     finally:
         conn.close()
@@ -797,9 +839,15 @@ async def attach_ready(request: Request):
             ids = [r["id"] for r in rows]
             for mid in ids:
                 db.update_material(conn, mid, goal_id=goal_id)
+            result = None
             if ids:
-                engine.replan(conn, goal_id, _now_utc())
-        return {"attached": len(ids), "material_ids": ids, "goal_id": goal_id}
+                result = planner.replan(conn, goal_id, _now_utc())
+        return {
+            "attached": len(ids),
+            "material_ids": ids,
+            "goal_id": goal_id,
+            "unplaced": result.get("unplaced", 0) if result else 0,
+        }
     finally:
         conn.close()
 
@@ -896,7 +944,7 @@ async def merge_topics_endpoint(request: Request):
                 now_iso=_now_utc(),
             )
             for gid in affected:
-                engine.replan(conn, gid, _now_utc())
+                planner.replan(conn, gid, _now_utc())
             topic_row = db.get_topic(conn, target_id)
             members = [
                 m
@@ -923,18 +971,24 @@ async def chat(request: Request):
         history = db.list_chat_messages(conn)
         context = _build_chat_context(conn, _now_utc())
         now_iso = _now_utc()
-        with conn:  # single transaction: tool actions (settings/effort) + messages
-            result = client.chat(
-                message=message,
-                history=[dict(h) for h in history],
-                context=context,
-                conn=conn,
-                now_iso=now_iso,
-            )
-            reply = result["reply"]
-            llm = result.get("llm", "off")
-            db.add_chat_message(conn, role="user", content=message)
-            db.add_chat_message(conn, role="assistant", content=reply)
+        try:
+            with conn:  # single transaction: tool actions (settings/effort) + messages
+                result = client.chat(
+                    message=message,
+                    history=[dict(h) for h in history],
+                    context=context,
+                    conn=conn,
+                    now_iso=now_iso,
+                )
+                reply = result["reply"]
+                llm = result.get("llm", "off")
+                db.add_chat_message(conn, role="user", content=message)
+                db.add_chat_message(conn, role="assistant", content=reply)
+        except actions.ReplanError as exc:
+            # A replan-critical tool wrote a constraint then the replan failed:
+            # the `with conn:` context manager rolled the transaction back.
+            # Surface a normal error reply (HTTP 200) instead of a 500.
+            return JSONResponse({"error": exc.message}, status_code=200)
         out = {"reply": reply, "llm": llm}
         if result.get("actions"):
             out["actions"] = result["actions"]
@@ -1098,6 +1152,12 @@ def stats(goal_id: str | None = None):
 
 # --------------------------------------------------------------------------- settings
 
+def _as_str(value: Any, key: str) -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"{key} must be a string")
+    return value
+
+
 def _as_float(value: Any, key: str) -> float:
     try:
         return float(value)
@@ -1184,6 +1244,10 @@ async def put_settings(request: Request):
             parsed[key] = _validate_revision_intervals_days(value)
         elif key == "utc_offset_minutes":
             parsed[key] = validate_utc_offset_minutes(_as_int(value, key))
+        elif key == "smart_placement":
+            parsed[key] = validate_smart_placement(_as_str(value, key))
+        elif key == "llm_placement_mode":
+            parsed[key] = validate_llm_placement_mode(_as_str(value, key))
         elif key == "llm_base_url":
             parsed[key] = validate_llm_base_url(str(value))
         elif key == "llm_model":
@@ -1209,9 +1273,130 @@ async def put_settings(request: Request):
             # the calendar never shows jobs outside the configured capacity.
             for goal in db.list_goals(conn):
                 if goal["status"] == "open":
-                    engine.replan(conn, goal["id"], _now_utc())
+                    planner.replan(conn, goal["id"], _now_utc())
         _ = settings  # parsed to validate the stored configuration
         return [_public_setting(row) for row in updated]
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------- constraints
+
+@app.get("/api/constraints")
+def list_constraints_endpoint():
+    conn = _get_conn()
+    try:
+        return actions.list_constraints(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/api/constraints", status_code=201)
+async def create_constraint_endpoint(request: Request):
+    body = await _read_body(request)
+    kind = body.get("kind")
+    params = body.get("params")
+    # Pass the raw value through: actions.add_constraint validates 'hard' as a
+    # strict JSON boolean (a string "false" must be rejected, not coerced).
+    hard = body.get("hard", False)
+    label = body.get("label")
+    conn = _get_conn()
+    try:
+        with conn:
+            try:
+                result = actions.add_constraint(
+                    conn, kind=kind, params=params, hard=hard, label=label,
+                    source="user", now_iso=_now_utc(),
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+        return result
+    finally:
+        conn.close()
+
+
+@app.delete("/api/constraints/{constraint_id}")
+def delete_constraint_endpoint(constraint_id: str):
+    conn = _get_conn()
+    try:
+        with conn:
+            result = actions.remove_constraint(
+                conn, constraint_id, now_iso=_now_utc()
+            )
+        return result
+    finally:
+        conn.close()
+
+
+@app.post("/api/events/annotate")
+async def annotate_events_endpoint(request: Request):
+    """(Re)annotate locked external events with subject/fatigue.
+
+    Body: {"force": false} — when true, every external is re-annotated
+    (LLM when configured, heuristic otherwise). Default annotates only
+    events that have no annotation yet. Annotations sourced 'user' are
+    never overwritten. LLM runs here are time-boxed (~45 s) and fall back
+    to the heuristic for what they cannot cover.
+
+    ``force`` must be a JSON boolean when present; anything else is a 422.
+
+    The LLM call and heuristic evaluation run *outside* the write
+    transaction, so the SQLite write lock is never held during network I/O:
+    the transaction only covers the force-delete and the upserts.
+    """
+    body = await _read_body(request)
+    force = body.get("force", False)
+    if not isinstance(force, bool):
+        raise ValidationError("force must be a boolean")
+
+    conn = _get_conn()
+    try:
+        # ---- Phase 1: outside the write transaction ----
+        # Read-only lookups plus the (time-boxed, possibly slow) LLM call.
+        settings = parse_settings(db.list_settings(conn))
+        llm = llm_mod.LLMClient(settings) if settings.llm_enabled else None
+        externals = [
+            e
+            for e in db.list_events(conn)
+            if e.get("kind") == "external" and e.get("locked")
+        ]
+        annotated_ids = db.annotated_event_ids(conn)
+        user_marked = {
+            row["event_id"]
+            for row in db.list_annotations(conn)
+            if row.get("source") == "user"
+        }
+        to_delete_ids = {
+            e["id"] for e in externals if force and e["id"] not in user_marked
+        }
+        missing = [
+            e
+            for e in externals
+            if e["id"] not in annotated_ids or e["id"] in to_delete_ids
+        ]
+        items = (
+            annotate.fetch_annotation_items(conn, missing, llm=llm) if missing else {}
+        )
+
+        # ---- Phase 2: write transaction (delete + upserts only) ----
+        with conn:
+            for eid in to_delete_ids:
+                conn.execute(
+                    "DELETE FROM event_annotations WHERE event_id = ?", (eid,)
+                )
+            count = 0
+            for event in missing:
+                item = items[event["id"]]
+                db.upsert_annotation(
+                    conn,
+                    event["id"],
+                    subject=item["subject"],
+                    fatigue=item["fatigue"],
+                    source=item.get("source", "heuristic"),
+                    note=item.get("note"),
+                )
+                count += 1
+        return {"annotated": count}
     finally:
         conn.close()
 

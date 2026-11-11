@@ -35,6 +35,9 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "llm_model": "",
     "llm_api_key": "",
     "default_effort_hours": "1.0",
+    # Smart placement (deterministic scorer) and optional LLM slot ranking.
+    "smart_placement": "on",
+    "llm_placement_mode": "off",
     # Cloudflare OCR (M4) — off by default; opt-in via settings.
     "ocr_provider": "off",
     "cf_account_id": "",
@@ -69,6 +72,13 @@ class Settings:
     ocr_min_chars: int = 40
     # Local clock offset used to lay out study windows (storage stays UTC).
     utc_offset_minutes: int = 0
+    # Smart placement: 'on' = penalised candidate scoring in the engine;
+    # 'off' = legacy earliest-free-slot scoring. Stored constraints still
+    # apply in both modes.
+    smart_placement: str = "on"
+    # LLM slot selection: 'off' (default) or 'rank' (LLM picks from a
+    # hard-valid shortlist; deterministic fallback on any failure).
+    llm_placement_mode: str = "off"
 
     @property
     def llm_enabled(self) -> bool:
@@ -144,6 +154,20 @@ def validate_llm_model(value: str) -> str:
     return text
 
 
+def validate_smart_placement(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text not in ("on", "off"):
+        raise ValidationError("smart_placement must be 'on' or 'off'")
+    return text
+
+
+def validate_llm_placement_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text not in ("off", "rank"):
+        raise ValidationError("llm_placement_mode must be 'off' or 'rank'")
+    return text
+
+
 def host_utc_offset_minutes() -> int:
     """Offset of the host clock from UTC, in minutes (e.g. +480 for UTC+8)."""
     offset = datetime.now(timezone.utc).astimezone().utcoffset()
@@ -161,19 +185,67 @@ def _decode_setting(value: str) -> str:
     return decoded if isinstance(decoded, str) else value
 
 
+def _parse_toggle(raw: Any, allowed: tuple[str, str], default: str) -> str:
+    """Decode a two-state setting, degrading corrupt values to ``default``.
+
+    ``parse_settings`` runs on every replan/chat; a hand-corrupted row must
+    not 500 every request — the validators above still guard the API path.
+    """
+    try:
+        text = str(_decode_setting(raw if raw is not None else "")).strip().lower()
+    except Exception:
+        return default
+    return text if text in allowed else default
+
+
+def _parse_number(raw: Any, default: Any, cast: Any) -> Any:
+    """Decode a numeric setting, degrading a corrupt row to ``default``.
+
+    Mirrors ``_parse_toggle``: any exception (bad JSON, wrong type,
+    unparseable literal) yields ``default`` cast through ``cast``, so a
+    hand-corrupted settings row never 500s a replan. The API PUT path keeps
+    its strict validators (see ``put_settings`` in app/main.py).
+    """
+    try:
+        text = str(_decode_setting(raw if raw is not None else "")).strip()
+    except Exception:
+        return cast(default)
+    if not text:
+        return cast(default)
+    try:
+        return cast(text)
+    except Exception:
+        return cast(default)
+
+
+def _parse_intervals(raw: Any) -> list[int]:
+    """Parse ``revision_intervals_days`` JSON, degrading a corrupt row to the
+    built-in default."""
+    try:
+        return json.loads(
+            raw if raw is not None else DEFAULT_SETTINGS["revision_intervals_days"]
+        )
+    except Exception:
+        return [1, 3, 7, 14]
+
+
 def parse_settings(rows: list[dict[str, Any]]) -> Settings:
     values = {row["key"]: row["value"] for row in rows}
     return Settings(
-        daily_capacity_hours=float(
-            values.get("daily_capacity_hours", DEFAULT_SETTINGS["daily_capacity_hours"])
+        daily_capacity_hours=_parse_number(
+            values.get("daily_capacity_hours", DEFAULT_SETTINGS["daily_capacity_hours"]),
+            DEFAULT_SETTINGS["daily_capacity_hours"],
+            float,
         ),
-        slot_minutes=int(
-            values.get("slot_minutes", DEFAULT_SETTINGS["slot_minutes"])
+        slot_minutes=_parse_number(
+            values.get("slot_minutes", DEFAULT_SETTINGS["slot_minutes"]),
+            DEFAULT_SETTINGS["slot_minutes"],
+            int,
         ),
         min_slot_minutes=int(
             values.get("min_slot_minutes", DEFAULT_SETTINGS["min_slot_minutes"])
         ),
-        revision_intervals_days=json.loads(
+        revision_intervals_days=_parse_intervals(
             values.get(
                 "revision_intervals_days",
                 DEFAULT_SETTINGS["revision_intervals_days"],
@@ -182,8 +254,10 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
         llm_base_url=_decode_setting(values.get("llm_base_url", "")),
         llm_model=_decode_setting(values.get("llm_model", "")),
         llm_api_key=_decode_setting(values.get("llm_api_key", "")),
-        default_effort_hours=float(
-            values.get("default_effort_hours", DEFAULT_SETTINGS["default_effort_hours"])
+        default_effort_hours=_parse_number(
+            values.get("default_effort_hours", DEFAULT_SETTINGS["default_effort_hours"]),
+            DEFAULT_SETTINGS["default_effort_hours"],
+            float,
         ),
         ocr_provider=_decode_setting(
             values.get("ocr_provider", DEFAULT_SETTINGS["ocr_provider"])
@@ -191,10 +265,14 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
         cf_account_id=_decode_setting(values.get("cf_account_id", "")),
         cf_api_token=_decode_setting(values.get("cf_api_token", "")),
         ocr_model=_decode_setting(values.get("ocr_model", DEFAULT_SETTINGS["ocr_model"])),
-        ocr_min_chars=int(
-            values.get("ocr_min_chars", DEFAULT_SETTINGS["ocr_min_chars"])
+        ocr_min_chars=_parse_number(
+            values.get("ocr_min_chars", DEFAULT_SETTINGS["ocr_min_chars"]),
+            DEFAULT_SETTINGS["ocr_min_chars"],
+            int,
         ),
-        utc_offset_minutes=(
-            int(_decode_setting(values.get("utc_offset_minutes", "")) or 0)
+        utc_offset_minutes=_parse_number(
+            values.get("utc_offset_minutes", ""), 0, int
         ),
+        smart_placement=_parse_toggle(values.get("smart_placement", "on"), ("on", "off"), "on"),
+        llm_placement_mode=_parse_toggle(values.get("llm_placement_mode", "off"), ("off", "rank"), "off"),
     )

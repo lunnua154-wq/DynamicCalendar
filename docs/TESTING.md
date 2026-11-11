@@ -26,6 +26,36 @@ thick enough to catch regressions. Fixtures: `samples/` (see its README — UIDs
 | E12 | pinned jobs survive replan | move a future job, replan → exact same slot |
 | E13 | revisions obey capacity/deadline | many learn completions on 1 h/day; no day over capacity, no revision after the deadline |
 
+## Placement — `tests/test_placement.py`, `tests/test_placement_review.py` and `tests/test_premerge_fixes.py` (better-llm-utilisation)
+Covers the placement machinery on top of the E1–E13 harness:
+| # | Invariant | Fixture setup |
+|---|---|---|
+| P1 | smart placement skips the 60 min after a fatigue≥2 event | annotated 08:00–12:00 lecture → job lands at 13:00, not 12:10 |
+| P2 | smart_placement=off restores earliest-free-slot scoring (stored constraints still apply) | same fixture, setting off → 12:10 |
+| P3 | `subject_gap` constraint pushes same-subject work out of the gap | external annotated math + constraint → job not inside the 60′ window |
+| P4 | hard constraints exclude candidates; if none survive, they relax to soft (job placed, note records "relaxed") | blocked_day_part hard over the whole 08:00–22:00 window → job exists, note mentions relaxed |
+| P5 | adjacency/interleave penalties are candidate-dependent (touching-chain model): touching a same-subject run costs; a free slot or foreign subject in between costs nothing | unit test on `job_adjacency_penalty` + two-math-materials avoidance test |
+| P6 | injected chooser's valid pick is honoured; 'llm' source + note recorded | fake chooser picks last shortlist entry; planner rank-mode integration test (monkeypatched `LLMClient.choose_placement`) |
+| P7 | chooser out-of-range / exception / bool / fractional choice → deterministic fallback; receipt says "LLM unavailable or budget reached" | fake choosers (incl. `{"choice": true}` and `1.9`) |
+| P8 | annotations are batched (15 per call, failure-isolated), per-item validated, never block replan | heuristic + broken-LLM + unknown-id-filtering tests; all-day events are fatigue 0; `cs1010` → subject cs; startup backfill at app start |
+| P9 | placement order is subject-interleaved (least-recently-used subject first), materials created by stable (created_at, rowid) | four materials math/cs/math/cs → subjects alternate |
+| P10 | pool reuse on re-derived jobs refreshes the receipt (source/note) | 3 materials, capacity 2 h → spill job's note flips to "ranked" after replan with a slot-stable chooser |
+| P11 | pre-upgrade databases migrate: `placement_*` columns added, `event_annotations`/`constraints` created, existing jobs backfilled to 'engine' | raw sqlite fixture in old schema → init_db |
+| P12 | corrupted constraint rows (out-of-band edits) never crash replan | `blocked_day_part` with `params='{}'` → replan succeeds |
+| P13 | built-in 60-minute window does not stretch with a longer user constraint window | `subject_gap gap_minutes=240` + fatigue-3 event 200 min prior → no "within 60 min" reason, only the 240′ one |
+| P14 | rank mode: ≤16 LLM calls **and** ≤20 s wall-clock per replan; extra jobs get "LLM budget reached" receipt | 5 × 4 h materials + counting fake → 16 calls, budget receipt on late jobs |
+| P15 | fractional/bool LLM-ish integer params are rejected (`2.9`, `1.5`) | `validate_params` unit tests + REST 422 |
+| P16 | interleave is soft-only; `hard:true` → ValueError → 422, never persisted | direct call + chat-tool dispatch tests |
+| P17 | `blocked_day_part` blocks on interval overlap, not start hour alone | 11:30–12:20 slot vs 12:00–13:00 block → blocked |
+| P18 | "never more than N in a row" phrasing parses | NL parser test |
+| P19 | no feasible slot at all (capacity exhausted) → `unplaced` receipt, no crash | 0.5 h capacity → replan returns `unplaced ≥ 1` |
+| P20 | annotations: zero-budget path skips LLM entirely; chunks of 15 validated independently | exploding fake w/ budget=0; 32-event batch → 3 create calls |
+| P21 | `force` re-annotation preserves `source='user'` rows | annotate endpoint with a pre-seeded user annotation |
+| — | `tests/test_premerge_fixes.py` (pre-merge hardening regressions) | F1–F7, B1–B5, C1–C7: `unplaced` counts remaining demand; strictest `interleave` row wins; corrupt-annotation tolerance; `upsert_annotation` user-guard; strict booleans → 422; per-call chooser timeout `min(15, remaining)`; `PRAGMA busy_timeout=10000`; annotate fetch outside the write txn; `unplaced` on every replan receipt; import/startup chooser bypass; offline NL via `actions.add_constraint`; chat replan failure rolls back |
+
+Chat flows — `tests/test_chat_constraints.py`: LLM tool path (add/list/remove_constraint tool calls) and the offline NL path ("avoid math right after math class" creates a `subject_gap` rule and re-plans open goals, no LLM key needed; unknown subjects get guidance instead of a dead rule; identical rules dedupe).
+Constraint validation/NL parsing — `tests/test_constraints.py`; REST CRUD — `tests/test_constraints_api.py` (422s, 404s, `smart_placement`/`llm_placement_mode` key validation); LLM skill contracts — `tests/test_llm_placement.py`.
+
 ## ICS — `tests/test_ics_sync.py`
 - import `samples/sample_calendar.ics` → 10 rows, correct UTC conversion (UTC+8 fixture)
 - `UID` dedup: re-import same file → 0 new, updated-in-place on changed rows

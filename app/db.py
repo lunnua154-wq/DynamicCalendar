@@ -79,7 +79,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   revision_round INTEGER NOT NULL DEFAULT 0,
   created_at     TEXT NOT NULL,
   pinned         INTEGER NOT NULL DEFAULT 0,
-  parent_job_id  TEXT NULL REFERENCES jobs(id)
+  parent_job_id  TEXT NULL REFERENCES jobs(id),
+  placement_source TEXT NOT NULL DEFAULT 'engine',
+  placement_note TEXT NULL
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -94,6 +96,27 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   id          TEXT PRIMARY KEY,
   role        TEXT NOT NULL CHECK (role IN ('user','assistant')),
   content     TEXT NOT NULL,
+  created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS event_annotations (
+  event_id    TEXT PRIMARY KEY REFERENCES events(id),
+  subject     TEXT NOT NULL DEFAULT 'general',
+  fatigue     INTEGER NOT NULL DEFAULT 0 CHECK (fatigue BETWEEN 0 AND 3),
+  source      TEXT NOT NULL DEFAULT 'heuristic'
+              CHECK (source IN ('heuristic','llm','user')),
+  note        TEXT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS constraints (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  params      TEXT NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  hard        INTEGER NOT NULL DEFAULT 0,
+  source      TEXT NOT NULL DEFAULT 'user' CHECK (source IN ('user','llm')),
+  label       TEXT NOT NULL,
   created_at  TEXT NOT NULL
 );
 
@@ -114,6 +137,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 10000")
     return conn
 
 
@@ -126,8 +150,9 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def _migrate_jobs_columns(conn: sqlite3.Connection) -> None:
     """Light migrations for existing databases created before the ``pinned`` /
-    ``parent_job_id`` columns existed. Safe to run on a fresh DB (columns are
-    already present via SCHEMA) and on an old DB (columns are added in place)."""
+    ``parent_job_id`` / placement columns existed. Safe to run on a fresh DB
+    (columns are already present via SCHEMA) and on an old DB (columns are
+    added in place)."""
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
     if "pinned" not in existing:
         conn.execute("ALTER TABLE jobs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
@@ -135,6 +160,12 @@ def _migrate_jobs_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE jobs ADD COLUMN parent_job_id TEXT NULL REFERENCES jobs(id)"
         )
+    if "placement_source" not in existing:
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN placement_source TEXT NOT NULL DEFAULT 'engine'"
+        )
+    if "placement_note" not in existing:
+        conn.execute("ALTER TABLE jobs ADD COLUMN placement_note TEXT NULL")
 
 
 def _seed_default_settings(conn: sqlite3.Connection) -> None:
@@ -319,14 +350,17 @@ def create_job(
     revision_round: int = 0,
     pinned: int = 0,
     parent_job_id: str | None = None,
+    placement_source: str = "engine",
+    placement_note: str | None = None,
 ) -> str:
     job_id = new_id()
     conn.execute(
         """
         INSERT INTO jobs
           (id, event_id, goal_id, material_id, kind, duration_min, status,
-           revision_round, created_at, pinned, parent_job_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           revision_round, created_at, pinned, parent_job_id,
+           placement_source, placement_note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job_id,
@@ -340,6 +374,8 @@ def create_job(
             now_utc(),
             pinned,
             parent_job_id,
+            placement_source,
+            placement_note,
         ),
     )
     return job_id
@@ -578,3 +614,79 @@ def list_chat_messages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         "SELECT * FROM chat_messages ORDER BY created_at, rowid"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- annotations
+
+def upsert_annotation(
+    conn: sqlite3.Connection,
+    event_id: str,
+    *,
+    subject: str,
+    fatigue: int,
+    source: str,
+    note: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO event_annotations(event_id, subject, fatigue, source, note, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(event_id) DO UPDATE SET
+          subject = excluded.subject,
+          fatigue = excluded.fatigue,
+          source = excluded.source,
+          note = excluded.note,
+          updated_at = excluded.updated_at
+        WHERE event_annotations.source != 'user' OR excluded.source = 'user'
+        """,
+        (event_id, subject, int(fatigue), source, note, now_utc()),
+    )
+
+
+def annotated_event_ids(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("SELECT event_id FROM event_annotations").fetchall()
+    return {row["event_id"] for row in rows}
+
+
+def list_annotations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM event_annotations").fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- constraints
+
+def list_constraints(
+    conn: sqlite3.Connection, *, enabled_only: bool = False
+) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM constraints"
+    if enabled_only:
+        sql += " WHERE enabled = 1"
+    sql += " ORDER BY created_at, id"
+    rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_constraint(
+    conn: sqlite3.Connection,
+    *,
+    kind: str,
+    params: str,  # already-serialised JSON (constraints.serialise_params)
+    hard: bool,
+    source: str,
+    label: str,
+    enabled: bool = True,
+) -> str:
+    constraint_id = new_id()
+    conn.execute(
+        """
+        INSERT INTO constraints(id, kind, params, enabled, hard, source, label, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (constraint_id, kind, params, int(enabled), int(hard), source, label, now_utc()),
+    )
+    return constraint_id
+
+
+def delete_constraint(conn: sqlite3.Connection, constraint_id: str) -> bool:
+    cur = conn.execute("DELETE FROM constraints WHERE id = ?", (constraint_id,))
+    return cur.rowcount > 0

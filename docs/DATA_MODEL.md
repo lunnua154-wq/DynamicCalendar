@@ -65,7 +65,29 @@ jobs
   revision_round INTEGER NOT NULL DEFAULT 0   -- 0=learn, 1..4=revision round n
   parent_job_id  TEXT NULL REFERENCES jobs(id) -- revision -> the completed learn job
   pinned         INTEGER NOT NULL DEFAULT 0    -- 1 = user dragged it; replan keeps it
+  placement_source TEXT NOT NULL DEFAULT 'engine'  -- 'engine' (deterministic argmin) | 'llm' (LLM shortlist pick)
+  placement_note TEXT NULL                     -- why this slot (penalty reasons / LLM reason / relaxation)
   created_at     TEXT NOT NULL
+
+event_annotations
+  event_id    TEXT PRIMARY KEY REFERENCES events(id)  -- one annotation per external event
+  subject     TEXT NOT NULL DEFAULT 'general'   -- lowercase normalised subject (tags/keyword map or LLM)
+  fatigue     INTEGER NOT NULL DEFAULT 0        -- 0=none … 3=very tiring; heuristics: ≥3h→3, ≥2h→2, ≥45m→1, +1 'lab'; all-day → 0; LLM chunks of 15 (explicit annotate endpoint only)
+  source      TEXT NOT NULL DEFAULT 'heuristic'
+              CHECK (source IN ('heuristic','llm','user'))
+  note        TEXT NULL                         -- short LLM note, optional
+  updated_at  TEXT NOT NULL
+
+constraints
+  id          TEXT PRIMARY KEY
+  kind        TEXT NOT NULL                     -- post_fatigue_buffer | subject_gap | interleave | blocked_day_part
+  params      TEXT NOT NULL                     -- JSON object, per-kind schema (bounds-validated)
+  enabled     INTEGER NOT NULL DEFAULT 1
+  hard        INTEGER NOT NULL DEFAULT 0        -- 1 = exclude candidate; relaxes to soft if no candidate survives
+  source      TEXT NOT NULL DEFAULT 'user'
+              CHECK (source IN ('user','llm'))
+  label       TEXT NOT NULL                     -- human-readable rule text
+  created_at  TEXT NOT NULL
 
 settings
   key         TEXT PRIMARY KEY            -- e.g. 'daily_capacity_hours'
@@ -99,6 +121,8 @@ chat_messages
 | `cf_api_token` | `""` | — |
 | `ocr_model` | `"@cf/unum/uform-gen2-qwen-500m"` | — |
 | `ocr_min_chars` | `40` | 1 – 10000 |
+| `smart_placement` | `"on"` | `on` \| `off` — deterministic penalty scoring in the planner (default on; `off` = legacy earliest-free-slot) |
+| `llm_placement_mode` | `"off"` | `off` \| `rank` — `rank`: LLM picks from a ≤4 shortlist of hard-valid candidates; deterministic fallback |
 
 `utc_offset_minutes` is the user's local clock offset. It is seeded once from the host
 on first run, then a normal dynamic setting. The engine lays out each day's study
@@ -126,3 +150,7 @@ stays UTC while study jobs land in waking hours.
 - A `revision` job records `parent_job_id`; replan uses it to avoid duplicating a
   spaced-repetition round that is already done/skipped/pinned.
 - Deletions are soft: materials → `superseded`; jobs → `skipped`; goals → `archived`.
+- Placement is never a secret: every job stores `placement_source` (`engine`|`llm`)
+  and `placement_note`; the week view surfaces the note as a tooltip/line on the card.
+- `event_annotations` and `constraints` are read-only for the engine (it never writes
+  them); they are data produced at import/annotate/CRUD time.

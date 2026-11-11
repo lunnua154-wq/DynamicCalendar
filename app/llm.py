@@ -19,6 +19,8 @@ from typing import Any
 
 from openai import OpenAI
 
+from . import db, actions
+from .constraints import parse_nl, serialise_params
 from .config import (
     EFFORT_HOURS_MAX,
     EFFORT_HOURS_MIN,
@@ -405,6 +407,11 @@ class LLMClient:
                         conn=conn,
                         now_iso=now_iso or _now_utc(),
                     )
+                except actions.ReplanError:
+                    # Constraint written but replan failed: propagate so the
+                    # caller's transaction rolls back instead of committing a
+                    # half-applied plan.
+                    raise
                 except Exception as exc:  # e.g. endpoint without tool support
                     error = _record_error("chat", exc)
                     tool_failure_kind = _error_kind(exc)
@@ -418,7 +425,12 @@ class LLMClient:
                     return out
                 except Exception as exc:  # network/LLM failure -> offline reply
                     error = _record_error("chat", exc)
-        out = self._chat_fallback(message=message, context=context)
+        out = self._chat_fallback(
+            message=message,
+            context=context,
+            conn=conn,
+            now_iso=now_iso or _now_utc(),
+        )
         if error is not None:
             # The reply is still useful, but the client must be able to tell
             # that the configured endpoint failed (docs/API.md).
@@ -452,13 +464,15 @@ class LLMClient:
         """Bounded agent loop (max 5 rounds) over the narrow tool registry.
 
         Tool results are appended as tool messages; every outcome is recorded
-        in the returned ``actions`` receipts. Any exception degrades to the
-        offline fallback (never propagates).
+        in the returned ``actions`` receipts. Ordinary failures degrade to the
+        offline fallback; ``actions.ReplanError`` (constraint written, replan
+        failed) propagates so the caller's transaction rolls back.
         """
         system = (
             "You are a study calendar assistant. Use the narrow tools to read "
-            "calendar data or apply bounded settings/effort changes; never "
-            "invent job moves or external-event changes."
+            "calendar data or apply bounded settings/effort/constraint changes "
+            "(constraints re-plan open goals automatically); never invent job "
+            "moves or external-event changes."
         )
         if context:
             system += "\nCalendar context: " + json.dumps(context)[:2000]
@@ -507,15 +521,31 @@ class LLMClient:
                 )
         # Cap reached without a final answer: degrade gracefully, but keep
         # the receipts — earlier rounds may already have changed settings.
-        out = self._chat_fallback(message=message, context=context)
+        out = self._chat_fallback(message=message, context=context, conn=conn, now_iso=now_iso)
         if actions:
             out["actions"] = actions
         return out
 
-    def _chat_fallback(self, *, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _chat_fallback(
+        self,
+        *,
+        message: str,
+        context: dict[str, Any] | None = None,
+        conn: Any = None,
+        now_iso: str | None = None,
+    ) -> dict[str, Any]:
         """Genuinely useful offline reply: calendar-grounded, never just
-        'LLM not configured'."""
+        'LLM not configured'. When ``conn`` is available, constraint-style
+        requests ('avoid math right after math class') are compiled by the
+        deterministic NL parser and applied immediately."""
         msg = message.lower()
+        if conn is not None:
+            try:
+                created = _try_create_nl_constraint(conn, message, now_iso or _now_utc())
+            except Exception:  # constraint storage must never break chat
+                created = None
+            if created is not None:
+                return {"reply": created, "llm": "off"}
         context = context or {}
         offset = int(context.get("utc_offset_minutes") or 0)
         jobs = context.get("jobs", []) or []
@@ -601,3 +631,223 @@ class LLMClient:
         if "slot_minutes" in data:
             out["slot_minutes"] = validate_slot_minutes(int(data["slot_minutes"]))
         return out
+
+    # ------------------------------------------------------ placement ranking
+
+    def choose_placement(
+        self,
+        *,
+        job_context: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Pick one hard-valid candidate slot for a job being placed.
+
+        ``candidates`` is the engine shortlist (2 earliest + 2 lowest-penalty,
+        de-duplicated), already hard-validated — the chooser can only reorder
+        valid options. Returns ``{"choice": int, "reason": str}``; raises on any
+        failure so the caller (engine) falls back to the deterministic pick.
+
+        ``timeout`` bounds this single LLM call in seconds (None = the current
+        15 s default). The planner passes the remaining wall-clock budget so a
+        slow endpoint can never eat the whole replan.
+        """
+        if self.client is None:
+            raise RuntimeError("LLM not configured")
+        if not candidates:
+            raise ValueError("no candidates to choose from")
+
+        def fmt_slot(value: Any) -> str:
+            try:
+                return value.strftime("%a %d %b %H:%M")
+            except AttributeError:
+                return str(value)
+
+        lines = [
+            f"  [{c['index']}] {fmt_slot(c.get('slot_start'))} — "
+            f"penalty {c.get('penalty', 0):.0f}"
+            + (f" ({'; '.join(c.get('reasons') or [])})" if c.get("reasons") else "")
+            for c in candidates
+        ]
+        prompt = (
+            "You are choosing *when* to schedule a study job. Reply with one "
+            'JSON object and nothing else: {"choice": <index>, "reason": "<short reason>"}.\n'
+            "Prefer slots that respect the constraints and spaced learning; avoid "
+            "placing demanding work in fatigued moments right after heavy events.\n"
+            f"Job: {json.dumps({k: v for k, v in job_context.items()})}\n"
+            "Candidate slots:\n" + "\n".join(lines) + "\n"
+            f"choice must be an integer between 0 and {len(candidates) - 1}."
+        )
+        effective_timeout = 15.0 if timeout is None else float(timeout)
+        resp = self.client.with_options(
+            max_retries=0, timeout=effective_timeout
+        ).chat.completions.create(  # type: ignore[union-attr]
+            model=self.settings.llm_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=150,
+        )
+        data = extract_json(resp.choices[0].message.content or "{}")
+        raw = data.get("choice", data.get("index"))
+        try:
+            raw_number = float(raw) if raw is not None and not isinstance(raw, bool) else None
+            index = int(raw_number) if raw_number is not None and raw_number.is_integer() else None
+        except (TypeError, ValueError):
+            index = None
+        if index is None or not 0 <= index < len(candidates):
+            raise ValueError(f"LLM placement choice {raw!r} out of range or not an integer")
+        reason = str(data.get("reason") or "").strip()[:180] or "LLM slot pick"
+        return {"choice": index, "reason": reason}
+
+    # ------------------------------------------------------------- annotation
+
+    def annotate_events(
+        self, *, events: list[dict[str, Any]], time_budget_seconds: float | None = 45.0
+    ) -> list[dict[str, Any]]:
+        """Annotate external events in 15-event chunks; per-chunk fault isolation.
+
+        ``time_budget_seconds`` bounds the whole operation (None = no budget);
+        chunks not attempted before the deadline are simply absent from the
+        result — the caller fills the gaps with the heuristic.
+
+        Returns validated items ``{"event_id", "subject", "fatigue", "note"}`` —
+        see ``app.annotate.normalize_llm_annotations``. Raises on *total*
+        transport failure so the caller can fall back to the heuristic.
+        """
+        if self.client is None:
+            raise RuntimeError("LLM not configured")
+        if not events:
+            return []
+
+        deadline = None if time_budget_seconds is None else time.monotonic() + time_budget_seconds
+
+        def annotate_chunk(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            payload = [
+                {
+                    "event_id": e["event_id"],
+                    "title": e.get("title"),
+                    "duration_minutes": e.get("duration_minutes"),
+                    "venue": e.get("venue"),
+                }
+                for e in chunk
+            ]
+            prompt = (
+                "Classify these calendar events for study planning. Reply with one "
+                "JSON object and nothing else: "
+                '{"annotations": [{"event_id": "<id>", "subject": "<lowercase subject, e.g. math>", '
+                '"fatigue": <int 0-3>, "note": "<optional short note>"}]}.\n'
+                "fatigue: 0 = not tiring, 1 = light, 2 = tiring, 3 = very tiring. "
+                "Use 'general' when no subject is discernible.\n"
+                f"Events: {json.dumps(payload)}"
+            )
+            resp = self.client.with_options(
+                max_retries=0, timeout=30
+            ).chat.completions.create(  # type: ignore[union-attr]
+                model=self.settings.llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                # ~60 output tokens per event + envelope, headroom included
+                max_tokens=min(4000, 300 + 90 * len(chunk)),
+            )
+            data = extract_json(resp.choices[0].message.content or "{}")
+            from .annotate import normalize_llm_annotations
+
+            return normalize_llm_annotations(
+                data, {e["event_id"] for e in chunk}
+            )
+
+        out: list[dict[str, Any]] = []
+        any_success = False
+        chunk_size = 15
+        for start in range(0, len(events), chunk_size):
+            if deadline is not None and time.monotonic() > deadline:
+                break  # budget spent: caller fills the rest heuristically
+            chunk = events[start : start + chunk_size]
+            try:
+                out.extend(annotate_chunk(chunk))
+                any_success = True
+            except Exception:
+                # this chunk degrades to the caller's heuristic fallback; the
+                # rest of the batch still lands
+                continue
+        if not any_success:
+            raise RuntimeError("all annotation chunks failed")
+        return out
+
+
+def _known_subjects(conn: Any) -> set[str]:
+    """Subjects visible in the user's data: material tags + annotation subjects."""
+    known: set[str] = set()
+    for row in conn.execute("SELECT tags FROM materials WHERE tags IS NOT NULL"):
+        try:
+            tags = json.loads(row["tags"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        for tag in tags:
+            text = str(tag).strip().lower()
+            if text:
+                known.add(text)
+    for row in conn.execute("SELECT DISTINCT subject FROM event_annotations"):
+        text = str(row["subject"] or "").strip().lower()
+        if text and text != "general":
+            known.add(text)
+    return known
+
+
+def _subject_known(chosen: str, known: set[str]) -> bool:
+    if not known:
+        return True  # nothing to check against; keep the rule
+    for candidate in known:
+        if candidate in chosen or chosen in candidate:
+            return True
+    tokens = set(chosen.split())
+    return any(set(k.split()) & tokens for k in known)
+
+
+def _try_create_nl_constraint(conn: Any, message: str, now_iso: str) -> str | None:
+    """Offline path: parse a constraint utterance and apply it deterministically.
+
+    Returns a human-readable confirmation, or ``None`` when the message does
+    not look like a constraint request. Re-plans open goals so the rule takes
+    effect immediately. Creates rules only for subjects present in the user's
+    data (a rule that can never fire is worse than asking to rephrase) and
+    de-duplicates identical rules.
+    """
+    parsed = parse_nl(message)
+    if parsed is None:
+        return None
+    from . import engine as _engine
+
+    subject = str(parsed["params"].get("subject", "")).strip().lower()
+    known = _known_subjects(conn)
+    if subject and not _subject_known(subject, known):
+        sample = ", ".join(sorted(known)[:5]) or "none yet"
+        return (
+            f"I understood a study rule, but no material/event in your data mentions "
+            f"“{subject}” (known subjects: {sample}). Rephrase with one of those, "
+            "e.g. “avoid math right after math class”."
+        )
+
+    params_serialized = serialise_params(parsed["params"])
+    for row in db.list_constraints(conn):
+        if row["kind"] == parsed["kind"] and row["params"] == params_serialized:
+            return f"That rule already exists — “{row['label']}” (id {row['id']})."
+
+    # Create via the shared action so validation, de-dup, rank-aware replan and
+    # receipts are single-sourced (actions.add_constraint replans open goals).
+    out = actions.add_constraint(
+        conn,
+        kind=parsed["kind"],
+        params=parsed["params"],
+        label=parsed["label"],
+        hard=False,
+        source="user",
+        now_iso=now_iso,
+    )
+    replanned = int(out.get("replanned_goals", 0))
+    suffix = f" Re-planned {replanned} open goal(s)." if replanned else ""
+    return (
+        f"Got it — saved the rule “{parsed['label']}” "
+        f"(id {out['constraint']['id']}).{suffix}"
+    )
+

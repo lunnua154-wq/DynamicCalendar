@@ -161,13 +161,17 @@ def main() -> None:
     done = [j for j in after if j["id"] == learn["id"]]
     check(done and done[0]["status"] == "done", "completed job stays done")
 
-    # 8. move/pin a future learn job; replan keeps the new slot
+    # 8. move/pin a movable learn job; replan keeps the new slot
+    #    ("movable" = starts in the future; with small demo materials all
+    #    jobs land today, so requiring a *tomorrow* date was time-of-day
+    #    brittle — pre-existing, fixed here)
+    now = datetime.now(timezone.utc)
     future = [
         j for j in after
         if j["kind"] == "learn" and j["status"] == "pending"
-        and parse_iso(j["slot_start"]).date() > datetime.now(timezone.utc).date()
+        and parse_iso(j["slot_start"]) >= now
     ]
-    check(bool(future), "a future learn job exists to move")
+    check(bool(future), "a movable learn job exists to move")
     target = future[0]
     start, end = free_slot(events, after)
     moved = client.post(

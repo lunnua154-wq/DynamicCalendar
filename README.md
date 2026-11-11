@@ -4,12 +4,13 @@ A **dynamic, calendar-orientated study manager** with a **lightweight LLM assist
 
 - The calendar (ICS / RFC 5545) is the single source of truth
 - Study jobs reflow in real time as progress changes (checkbox ticks, file drops, re-imports)
-- The LLM only tags / de-dups / chats — it **never** does scheduling math
+- The LLM enriches placement with validated semantic judgement (fatigue, subjects, NL constraints) — it proposes; the deterministic engine disposes
 - Import-only sync for now (export is a future feature)
 
 ## Status
 
-**M0–M4 are implemented; M5 (final delivery) is complete.** The full loop works
+**M0–M4 are implemented; M5 (final delivery) is complete. The `better-llm-utilisation`
+branch adds LLM-assisted placement (M6-style).** The full loop works
 end-to-end: import an `.ics`, create a goal from an exam, drop materials (tagged
 and clustered, optionally via an LLM), and jobs are scheduled immediately.
 Ticking a job adds spaced revisions and reflows the plan atomically. Dragging a
@@ -17,6 +18,26 @@ job pins it, and external calendar events override conflicting pinned slots.
 Chat is grounded in the calendar and falls back to useful offline answers. Stats
 and optional Cloudflare OCR are available, and the app ships as a multi-stage
 Docker image.
+
+**LLM-assisted placement** (see `docs/LLM_PLACEMENT.md`):
+- **Smart placement (on by default, deterministic)** — the planner scores valid
+  candidates instead of taking the earliest free slot: no study right after
+  tiring events (`fatigue` annotations), no same-subject work right after a
+  same-subject external, interleaving mildly preferred. The built-in
+  back-to-back nudge applies by default — `smart_placement=off` restores the
+  exact pre-branch earliest-free-slot behaviour (stored constraints still apply).
+- **Natural-language constraints** — "avoid math right after math class",
+  "no study right after long lectures": compiled by the LLM (chat tool
+  `add_constraint`) or by a deterministic offline parser, stored as data,
+  enforced by the planner. Hard constraints never deadlock the plan (they relax
+  to soft).
+- **Optional LLM slot choice** (`llm_placement_mode=rank`, off by default) —
+  the configured LLM picks from a ≤4 shortlist of **hard-valid** candidates;
+  any failure falls back to the deterministic scorer.
+- Every job records `placement_source` and `placement_note` — the week view
+  shows a truncated "why: …" line with the full reason on hover. Replan
+  receipts surface `unplaced` (lost material demand that could not be placed
+  before the deadline) on tick, move, attach_ready and constraint add/remove.
 
 - **M2** — settings panel for any OpenAI-compatible endpoint; auto-tag, de-dup,
   and topic clustering (`new`/`duplicate`/`version`); grounded chat.
@@ -38,7 +59,8 @@ every LLM skill falls back to a deterministic path.
 | `BLUEPRINT.md` | Concept, stack, milestones, confirmed decisions |
 | `AGENTS.md` | Rules for anyone (human or AI agent) coding in this repo — **read first** |
 | `CONTRIBUTING.md` | Setup, tests, commit conventions, review checklist |
-| `docs/ARCHITECTURE.md` | Modules, data flows, engine algorithm, LLM skills |
+| `docs/LLM_PLACEMENT.md` | LLM-assisted placement: design, phasing, acceptance criteria |
+| `docs/ARCHITECTURE.md` | Modules, data flows, engine algorithm, placement pipeline, LLM skills |
 | `docs/DATA_MODEL.md` | SQLite schema + ICS mapping rules |
 | `docs/API.md` | REST endpoints (M0–M5) |
 | `docs/STYLE.md` | Python + web code style |
@@ -82,4 +104,4 @@ then restart `python -m app.main`. The schema is re-created automatically; run
 
 ## Offline-first LLM
 
-With no LLM endpoint configured, every LLM skill (tag, cluster, chat, tune_settings) falls back to a deterministic path, so chat and file tagging work without any API key. Configure `llm_base_url` / `llm_model` (and optional `llm_api_key`) in Settings to point at any OpenAI-compatible endpoint (OpenAI, Cloudflare Workers AI, Ollama…).
+With no LLM endpoint configured, every LLM skill (tag, cluster, chat, tune_settings) falls back to a deterministic path, so chat and file tagging work without any API key. Configure `llm_base_url` / `llm_model` (and optional `llm_api_key`) in Settings to point at any OpenAI-compatible endpoint (OpenAI, Cloudflare Workers AI, Ollama…). The same Settings panel exposes **Smart placement** (deterministic penalty scoring; `off` restores earliest-free-slot) and **LLM placement** (`off`|`rank`; opt-in — the configured LLM picks from a shortlist of hard-valid slots) and explains both inline.

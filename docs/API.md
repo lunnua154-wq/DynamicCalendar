@@ -19,8 +19,9 @@ multipart.
 ## Calendar
 | Method & path | Body | Returns |
 |---|---|---|
-| `GET /api/events?from=&to=` | — | `[{id, kind, title, dtstart, dtend, venue, all_day, job?}]` — `job: {id, status, kind, material_id, revision_round, duration_min, pinned}` attached for study/revision kinds |
-| `POST /api/ics/import` | multipart `file` (.ics) | `{imported, skipped, exams_found: [titles], exams: [{event_id, title, dtstart, dtend, venue}], replanned_goals: [ids]}` |
+| `GET /api/events?from=&to=` | — | `[{id, kind, title, dtstart, dtend, venue, all_day, job?}]` — `job: {id, status, kind, material_id, revision_round, duration_min, pinned, placement_source, placement_note}` attached for study/revision kinds |
+| `POST /api/ics/import` | multipart `file` (.ics) | `{imported, skipped, exams_found: [titles], exams: [{event_id, title, dtstart, dtend, venue}], annotated: n, replanned_goals: [ids]}` — `annotated` counts external events given a heuristic annotation (keyword/duration) in this request; app startup backfills pre-upgrade databases the same way; LLM annotation is on-demand only via `POST /api/events/annotate` |
+| `POST /api/events/annotate` | `{force?: bool}` | `{annotated: n}` — annotate external events that lack one (or re-annotate all when `force: true`). LLM (chunked, ~45 s budget, heuristic for what it cannot cover) when an endpoint is configured, heuristic otherwise. Annotations sourced `user` are **never** overwritten by `force`; LLM/time failures degrade per event to the heuristic |
 | `GET /api/stats?goal_id=` | — | `{totals: {planned_min, done_min, progress, materials, revisions_due}, goals: [...], by_day: [{date, planned_min, done_min}]}` — `by_day` covers the trailing 13 days and the next 14; unknown `goal_id` → **404** |
 
 `exams` is additive (kept alongside `exams_found`) so the Calendar exam banner can
@@ -39,7 +40,9 @@ ISO-8601 timestamps are also accepted (then they are exact, `to` exclusive).
 | `GET /api/goals` | — | `[{id, title, deadline, exam_event_id, status, progress, total_effort_hours, done_effort_hours, planned_jobs, done_jobs}]` |
 | `GET /api/goals/{id}` | — | same row + progress fields |
 | `POST /api/goals` | `{title, deadline?, exam_event_id?}` | goal row + progress; triggers `replan` if a deadline is known |
-| `POST /api/goals/{id}/replan` | — | `{moved_jobs: [ids], revisions_added: [ids], moved_count}` |
+| `POST /api/goals/{id}/replan` | — | `{moved_jobs: [ids], revisions_added: [ids], moved_count, unplaced}` — `unplaced` counts lost **material demand slots**: the summed remaining demand (per-material unschedulable slots) that could not be placed before the deadline — capacity exhausted, not a preference failure — work that would otherwise have vanished silently |
+
+`unplaced` is summed across the re-planned goal and surfaced additively on every replan-triggering write receipt: the checkbox-tick response (`POST /api/jobs/{id}/complete`), the move-job response (`POST /api/jobs/{id}/move`), `POST /api/inbox/attach_ready`, and the constraint add/remove receipts (aggregated across open goals). See the Jobs, Inbox and Constraints sections below for each response shape.
 
 `deadline` may be omitted when `exam_event_id` is supplied: the server derives it
 from that external event. If neither is present → **422**.
@@ -47,9 +50,9 @@ from that external event. If neither is present → **422**.
 ## Jobs
 | Method & path | Body | Returns |
 |---|---|---|
-| `GET /api/jobs?from=&to=` | — | `[{id, kind, title, material_id, material_title, slot_start, slot_end, duration_min, status, revision_round, pinned}]` — `title` = the file name |
-| `POST /api/jobs/{id}/complete` | — | `{replanned: [ids], revisions_added: [ids]}` — **one atomic transaction**; idempotent for an already-done job |
-| `POST /api/jobs/{id}/move` | `{slot_start, slot_end}` | `{job, moved_jobs}` — sets `pinned=1`, reflows the rest; **409** if overlapping an external event, another job, after the goal deadline, or before now |
+| `GET /api/jobs?from=&to=` | — | `[{id, kind, title, material_id, material_title, slot_start, slot_end, duration_min, status, revision_round, pinned, placement_source, placement_note}]` — `title` = the file name; `placement_source`/`placement_note` explain why this slot was chosen (`engine` = deterministic argmin-penalty pick, `llm` = LLM shortlist pick, `note` carries the reason) |
+| `POST /api/jobs/{id}/complete` | — | `{replanned: [ids], revisions_added: [ids], unplaced}` — **one atomic transaction**; idempotent for an already-done job; `unplaced` is the summed lost demand across the re-planned goal |
+| `POST /api/jobs/{id}/move` | `{slot_start, slot_end}` | `{job, moved_jobs, unplaced}` — sets `pinned=1`, reflows the rest; `unplaced` is the summed lost demand across the re-planned goal; **409** if overlapping an external event, another job, after the goal deadline, or before now |
 | `POST /api/jobs/{id}/skip` | — | job row (`status='skipped'`); replans the goal |
 
 Move accepts ISO-8601 with or without milliseconds/`Z`. `slot_end` must be after
@@ -65,7 +68,7 @@ not pin.
 | `POST /api/inbox/files/{id}/dismiss` | `{action: 'duplicate'\|'superseded'\|'new'}` | material row — user override; replans the goal |
 | `POST /api/inbox/files/{id}/effort` | `{hours}` | material row — user override (bounds-validated); replans the goal |
 | `POST /api/inbox/files/{id}/attach` | `{goal_id}` | material row — attach to a goal and replan; **404** if the goal is missing |
-| `POST /api/inbox/attach_ready` | `{"goal_id"}` | `{attached, material_ids, goal_id}` — attaches every `ready` material with no goal and replans **once**; **404** if the goal is missing |
+| `POST /api/inbox/attach_ready` | `{"goal_id"}` | `{attached, material_ids, goal_id, unplaced}` — attaches every `ready` material with no goal and replans **once**; `unplaced` is the summed lost demand across the goal; **404** if the goal is missing |
 
 A hash-duplicate creates a distinct `duplicate` material row linked via
 `duplicate_of` (the original keeps its files). Unsupported formats produce a row
@@ -88,12 +91,46 @@ file is kept.
 Chat receives calendar context (open goals, next 14 days of jobs/external events,
 recent materials) so it can answer “what’s due this week?” even offline. The LLM
 may invoke narrow tools: read-only (list_goals, list_jobs, list_events,
-list_materials, get_stats) and two bounded writes (update_settings,
-set_material_effort). Every tool result is returned to the client in the additive
-`actions` array as `{tool, args, result}` receipts. Settings changes made by chat
-are bounds-validated and stored with `updated_by='llm'` and visible in the
-receipt; the engine still owns placement and re-plan is explicit (user presses
-Re-plan). The LLM never moves jobs or touches external events.
+list_materials, get_stats, list_constraints) and bounded writes (update_settings,
+set_material_effort, add_constraint, remove_constraint). Every tool result is
+returned to the client in the additive `actions` array as `{tool, args, result}`
+receipts. Settings changes made by chat are bounds-validated and stored with
+`updated_by='llm'`; constraint writes take effect through an immediate replan of
+open goals. The LLM never moves jobs directly or touches external events.
+
+**Constraints from chat.** “Avoid math right after math class” is compiled to a
+`subject_gap` constraint — with an LLM configured, via the `add_constraint` tool
+(LLM emits structured, validated args); offline, via a deterministic NL parser in
+the chat fallback (`app/constraints.parse_nl`). Both paths validate against
+per-kind schemas and persist the rule with `source='llm'` / `source='user'`.
+`POST /api/chat` in that case replies “Got it — saved the rule …” and the plan is
+re-flowed immediately.
+
+## Constraints
+User/LLM-authored scheduling preference rules, stored as data and enforced deterministically by the planner (soft = penalty, hard = exclude candidate; hard relaxes to soft when no candidate survives — the job is never dropped).
+
+| Method & path | Body | Returns |
+|---|---|---|
+| `GET /api/constraints` | — | `[{id, kind, params, hard, enabled, source: 'user'\|'llm', label, created_at}]` — hand-corrupted rows (out-of-band edits) are returned with `"broken": true` and empty `params` instead of crashing the list |
+| `POST /api/constraints` | `{kind, params, hard?, label?}` | `{constraint: {...}, replanned_goals: n, unplaced}` — **201**; open goals are re-planned immediately. An idempotent re-POST of an identical rule (de-dups on `kind`+`params`) returns `{"existing": true, ...}` with `replanned_goals: 0`, `unplaced: 0`, and **no replan** |
+| `DELETE /api/constraints/{id}` | — | `{deleted: id, replanned_goals: n, unplaced}` — **404** if unknown |
+
+Kinds and params (bounds-validated, **422** otherwise):
+`post_fatigue_buffer` `{min_fatigue: 1–3, buffer_minutes: 15–240}` — no study within N min of a fatigue≥M event;
+`subject_gap` `{subject: string ≤40 chars, gap_minutes: 15–240}` — no study of *subject* within N min after a same-subject external (“no math right after math class”);
+`interleave` `{max_consecutive: 1–5}` — penalise more than N same-subject jobs in a row (soft-only);
+`blocked_day_part` `{start_hour: 0–23, end_hour: 0–23}` — no (or penalised) study between the hours.
+Add `hard: true` to any kind to exclude matching slots outright — except
+`interleave`, which is soft-only (`hard: true` → **422**). `label` is optional
+(auto-generated from kind+params). `blocked_day_part` blocks on interval
+overlap (a 50-minute slot starting 11:30 overlaps a 12:00–13:00 block), not
+just the slot's start hour.
+
+**Boolean params are strict.** `hard` on `POST /api/constraints` and `force`
+on `POST /api/events/annotate` (and boolean params generally) must be real JSON
+booleans: `"false"`, `"true"`, `1`, `0`, `"yes"` etc. are rejected with **422** —
+they are never silently coerced. The same strict check applies to the chat
+`add_constraint` tool.
 
 ## Settings
 | Method & path | Body | Returns |
@@ -106,8 +143,12 @@ Keys: `daily_capacity_hours` (0.5–12), `slot_minutes` (15–120),
 `default_effort_hours` (0.1–20), `utc_offset_minutes` (−840…840, the user's local clock offset),
 `llm_base_url` (empty → offline, else an `http(s)://` URL), `llm_model`, `llm_api_key` (write-only),
 `ocr_provider` (`off|cloudflare`), `cf_account_id`, `cf_api_token`, `ocr_model`,
-`ocr_min_chars`. Locally-hosted endpoints need no key (a client-side placeholder is
-used); hosted endpoints authenticate with `llm_api_key`.
+`ocr_min_chars`, `smart_placement` (`on|off` — deterministic penalty scoring in the
+planner; default `on`, `off` restores earliest-free-slot), `llm_placement_mode`
+(`off|rank` — `rank` lets the configured LLM pick from a ≤4 shortlist of
+hard-valid slots per job, deterministic fallback on any failure; default `off`).
+Locally-hosted endpoints need no key (a client-side placeholder is used);
+hosted endpoints authenticate with `llm_api_key`.
 
 ## LLM diagnostics
 | Method & path | Body | Returns |

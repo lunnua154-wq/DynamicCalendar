@@ -10,11 +10,12 @@ A **dynamic, calendar-orientated study manager** with a **lightweight LLM assist
 
 **Dynamic.** The calendar is not a static plan. Whenever real progress changes (checkbox ticked, new file fed in, external event changes), the scheduler **recomputes future work in real time**. Completed work is immutable; the future reflows around reality.
 
-**LLM is an assistant, not the brain.** The LLM never does scheduling math. Deterministic Python handles all allocation. The LLM does exactly three things:
+**LLM is an assistant, not the brain.** The LLM never does scheduling math. Deterministic Python handles all hard-constraint allocation. The LLM now also enriches *soft* placement decisions (fatigue/subject semantics, natural-language constraints, optional shortlist choice) — see `docs/LLM_PLACEMENT.md` and the 2026-11-09 decisions; hard guarantees (overlap, capacity, deadline, done/pinned immutability) remain absolute and deterministic. The LLM does exactly four things:
 
 1. **Tag** learning material (topic, summary, effort estimate)
 2. **Classify / de-duplicate / cluster** fed-in files (versions, groups, duplicates)
 3. **Chat** — answer questions ("what's due this week?", "summarize chapter 3")
+4. **Guide placement** — annotate externals, compile NL constraints, optionally pick from hard-valid candidate slots (validated; deterministic fallback)
 
 This keeps LLM cost low, makes behavior predictable, and means the app works with any OpenAI-compatible endpoint (or none at all for M0).
 

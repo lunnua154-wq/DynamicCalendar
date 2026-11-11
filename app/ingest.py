@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import db, engine, ocr
+from . import db, ocr, planner
 from .config import Settings
 
 
@@ -317,7 +317,7 @@ def attach_to_goal(
 
     db.update_material(conn, material_id, goal_id=goal_id)
     conn.commit()
-    result = engine.replan(conn, goal_id, now_iso)
+    result = planner.replan(conn, goal_id, now_iso)
     conn.commit()
     return result
 

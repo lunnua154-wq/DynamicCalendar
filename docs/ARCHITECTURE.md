@@ -33,7 +33,13 @@ upload (multipart)
 ```
 POST /api/ics/import (multipart file)
   → merge events by ICS UID (same transaction, all-or-nothing)
-  → engine.replan() for every open goal
+  → annotate external events lacking an annotation (app/annotate.py):
+      HEURISTIC only — deterministic, instant, never able to stall the HTTP
+      response; LLM annotation is available on demand via
+      POST /api/events/annotate {"force": true} (chunked, ~45 s budget)
+      (pre-upgrade databases are heuristic-backfilled at every app startup — idempotent, no LLM calls)
+  → engine.replan() for every open goal (deterministic — `allow_llm_chooser=False`,
+     so LLM ranking never holds the import transaction; see the placement pipeline)
     (pinned jobs that now overlap an imported external are deleted
      and re-placed unpinned; pinned jobs that don't overlap stay put)
   → exams detected are reported with their event ids
@@ -68,7 +74,7 @@ POST /api/jobs/{id}/move {slot_start, slot_end}
 ## Engine algorithm (`engine.replan`)
 
 ```
-inputs:  db snapshot, settings, now (injected)
+inputs:  db snapshot, settings, now (injected)[, chooser (injected)]
 output:  updated job slots
 
 free_slots(day)  = capacity_slots(day)
@@ -84,8 +90,27 @@ capacity_slots(day) = settings.daily_capacity_hours (dynamic setting)
 remaining = goal.effort_total − done_effort(goal)
 
 1. KEEP: pending jobs on today's date and pinned jobs stay put (no churn)
-2. PLACE: next unallocated work (topic order → material order) fills
-   free slots from today → goal.deadline, one slot at a time
+2. PLACE: for each job to place, enumerate candidates from today
+   → deadline, score each, and take the winner:
+     • hard gates: overlap / capacity / deadline / done-pinned (never relaxed
+       except the global relaxation rule, below)
+     • soft penalty: built-in placement wisdom (60-minute fatigue/subject
+       adjacency window, touching-chain job adjacency) + stored constraint rows
+     • chooser=None → argmin(penalty, start); penalties ≥ 0, so the first
+       penalty-0 VALID candidate is optimal and the scan stops early
+     • chooser set  → LLM picks from a shortlist (2 earliest + 2 lowest penalty,
+       ≤4); revisions share the same 16-call / 20 s budget
+     • chooser failure/out-of-range → deterministic argmin fallback
+     • relaxation rule: if hard constraints exclude EVERY candidate, they
+       degrade to soft and the job is placed anyway (placement_note records it)
+     • if even relaxed candidates can't fit (capacity/deadline exhausted),
+       the material is not silently dropped: engine returns `unplaced` > 0
+       and the replan receipt surfaces it
+   Learn work is placed subject-interleaved: the planner takes the first queued
+   material whose primary subject differs from the last placed subject; if every
+   queued material shares that subject it falls back to placement order (index 0)
+   — deterministic, not strict round-robin. Materials keep creation order within a
+   subject round, so interleaving materialises in the plan rather than only in receipts.
 3. PULL-FORWARD: if remaining hits 0 before the deadline, the next
    material is scheduled immediately (the plan stays "full and current")
 4. REVISIONS: after a learn job completes, rounds at +1d/+3d/+7d/+14d;
@@ -93,15 +118,64 @@ remaining = goal.effort_total − done_effort(goal)
    is occupied, push to the next free slot; never silently drop — mark
    'conflicted' and surface in UI. Revisions respect the daily capacity and
    the goal deadline.
+   Every created job records placement_source ('engine'|'llm') and
+   placement_note (why), surfaced in /api/events and the week view.
 
 Invariants:
   - never overlaps external events
   - done jobs and pinned jobs never move
   - external events never change
   - no duplicate revision round for the same learn job
-  - idempotent: same (db, settings, now) in → same out
-  - pure: no I/O except the single transaction at commit
+  - idempotent: same (db, settings, now, chooser) in → same out
+  - pure: no I/O except the single transaction at commit; the LLM (if any)
+    is an *injected* dependency, exactly like the clock
 ```
+
+## Placement pipeline (better-llm-utilisation)
+
+```
+ICS import ──► annotate_missing()               (app/annotate.py)
+            ├─ heuristic (offline, always): fatigue (≥3h→3, ≥2h→2, ≥45m→1, +1 lab;
+            │   all-day → 0) + subject (keyword/regex map)
+            └─ LLM chunks of 15 (explicit `POST /api/events/annotate`, ~45 s
+                budget, per-chunk failure isolation; per-item validated).
+                App startup and ICS import are heuristic-only: the backfill
+                runs at every startup, is idempotent (skips already-annotated
+                events), makes no LLM calls, and never stalls the response.
+            ▼
+   event_annotations table  ◄── POST /api/events/annotate {force?}
+   (app startup backfills pre-upgrade databases at every start — idempotent,
+    heuristic-only, no LLM calls)
+
+replan ──► candidates = all hard-valid slots (today → deadline)
+        ──► score_slot(...)                     (app/constraints.py)
+        │     built-in wisdom (smart_placement=on): fatigue≥2 within 60′ (+30/+60),
+        │     same-subject within 60′ (+30), back-to-back same subject (+10)
+        │     stored constraints (soft +, hard exclude; relax if all blocked):
+        │     post_fatigue_buffer · subject_gap · interleave · blocked_day_part
+        ├─ chooser off/None → argmin(penalty, start)
+        └─ chooser on (llm_placement_mode=rank) → planner builds chooser →
+              LLMClient.choose_placement(): shortlist prompt, JSON answer,
+              index validated ∈ [0, len), reason clamped 180 chars;
+              anything else → deterministic fallback; ≤16 LLM calls per replan;
+              the placement note written on each job is capped at 250 chars
+
+constraints table ◄── POST /api/constraints · chat tool add_constraint ·
+                      offline NL parser (chat "avoid math right after math class")
+   params validated per kind (subject_gap / post_fatigue_buffer / interleave /
+   blocked_day_part); enabled/hard/source(llm|user) stored
+```
+
+**ICS import replans bypass the LLM chooser.** `POST /api/ics/import` calls
+`planner.replan(..., allow_llm_chooser=False)` so every open goal is re-planned
+deterministically inside the import transaction — this bounds write-transaction
+time on bulk import and keeps LLM I/O out of the write path entirely. Constraint
+add/remove (`POST`/`DELETE /api/constraints`) and the checkbox tick
+(`POST /api/jobs/{id}/complete`) still go through `planner.replan` with the
+chooser allowed, so they rank with the LLM when `llm_placement_mode='rank'`.
+
+The LLM never appears in `engine.py`. `app/planner.py` wires the chooser;
+`engine.replan(..., chooser=None)` remains a pure function of its inputs.
 
 ## Dynamic settings (the "fake time" defaults)
 
@@ -117,17 +191,21 @@ re-derivation.
 ## LLM integration rules
 - All LLM I/O lives in `llm.py`; every skill has a deterministic fallback (offline mode).
 - LLM output is validated (bounds above) **before** persisting; rejected output → fallback.
-- LLM JSON may arrive wrapped in markdown fences — parsing strips fences before validation.
+- LLM JSON may arrive wrapped in markdown fences — parsing strips fences before validation (`extract_json`).
+- Hard constraint violation is impossible by construction: `choose_placement` picks *inside* a hard-valid shortlist whose membership is re-checked by the engine.
+- LLM selection is an **injected dependency** (`chooser`), never an import inside the engine — same pattern as the injected clock.
 - The LLM endpoint is configured via `settings` (base_url + model + key), so switching
   providers (Cloudflare Workers AI / OpenAI / Ollama / llama.cpp) is a config change, not code.
 - No key configured → `llm.enabled == False` → every skill takes its fallback path.
 - `chat` is a bounded tool-calling loop (max 5 rounds) over a narrow registry: read-only
-  tools (list_goals, list_jobs, list_events, list_materials, get_stats) and two bounded
-  writes (update_settings, set_material_effort). Tool results are returned to the client
-  as `actions` receipts; settings changes are bounds-validated and stored with
-  `updated_by='llm'`. The engine remains the only scheduler — no tool moves jobs or
-  touches external events (rule #2). Offline (no LLM configured): deterministic
-  calendar-grounded fallback, no tools offered.
+  tools (list_goals, list_jobs, list_events, list_materials, get_stats, list_constraints) and
+  bounded writes (update_settings, set_material_effort, add_constraint, remove_constraint).
+  Tool results are returned to the client as `actions` receipts; settings changes are
+  bounds-validated and stored with `updated_by='llm'`; constraint writes persist and
+  re-plan open goals immediately. The engine remains the scheduler of record — no tool
+  moves jobs or touches external events (rule #2). Offline (no LLM configured):
+  deterministic calendar-grounded fallback, no tools offered; constraint-style
+  utterances are still compiled by the deterministic NL parser.
 - `tune_settings` keyword path retired: settings changes now go through the explicit
   `update_settings` tool invoked by the model.
 
