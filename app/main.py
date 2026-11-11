@@ -7,10 +7,13 @@ Routes mirror docs/API.md (M0–M3). The database path defaults to
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -21,8 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .annotate import annotate_missing
-from . import actions, db, ics_sync, ingest, llm as llm_mod, planner
+from . import actions, annotate, db, ics_sync, ingest, llm as llm_mod, planner
 
 from .config import (
     DEFAULT_SETTINGS,
@@ -75,11 +77,13 @@ async def _lifespan(_app: FastAPI):
         conn = _get_conn()
         try:
             with conn:
-                annotate_missing(conn, llm=None, time_budget_seconds=0.0)
+                annotate.annotate_missing(conn, llm=None, time_budget_seconds=0.0)
         finally:
             conn.close()
     except Exception:
-        pass  # annotation degrades placement quality, never startup
+        logger.warning(
+            "startup annotation backfill failed; continuing without it", exc_info=True
+        )
     yield
 
 
@@ -396,10 +400,12 @@ async def ics_import(file: UploadFile = File(...)):
         with conn:
             # heuristic-only: annotation must never stall an HTTP response.
             # LLM annotation is available via POST /api/events/annotate.
-            annotated = annotate_missing(conn, llm=None, time_budget_seconds=0.0)
+            annotated = annotate.annotate_missing(conn, llm=None, time_budget_seconds=0.0)
             open_goals = [g for g in db.list_goals(conn) if g["status"] == "open"]
             for g in open_goals:
-                planner.replan(conn, g["id"], _now_utc())
+                # Import-time replans must not hold the write lock for LLM
+                # ranking; deterministic scoring still applies.
+                planner.replan(conn, g["id"], _now_utc(), allow_llm_chooser=False)
         result = dict(result)
         result["annotated"] = annotated
         result["replanned_goals"] = [g["id"] for g in open_goals]
@@ -515,6 +521,7 @@ def complete_job(job_id: str):
         return {
             "replanned": result["moved_jobs"],
             "revisions_added": result["revisions_added"],
+            "unplaced": result.get("unplaced", 0),
         }
     finally:
         conn.close()
@@ -571,7 +578,11 @@ async def move_job(job_id: str, request: Request):
                 job_updates["status"] = "pending"
             db.update_job(conn, job_id, **job_updates)
             result = planner.replan(conn, job["goal_id"], now_str)
-        return {"job": db.get_job(conn, job_id), "moved_jobs": result["moved_jobs"]}
+        return {
+            "job": db.get_job(conn, job_id),
+            "moved_jobs": result["moved_jobs"],
+            "unplaced": result.get("unplaced", 0),
+        }
     finally:
         conn.close()
 
@@ -828,9 +839,15 @@ async def attach_ready(request: Request):
             ids = [r["id"] for r in rows]
             for mid in ids:
                 db.update_material(conn, mid, goal_id=goal_id)
+            result = None
             if ids:
-                planner.replan(conn, goal_id, _now_utc())
-        return {"attached": len(ids), "material_ids": ids, "goal_id": goal_id}
+                result = planner.replan(conn, goal_id, _now_utc())
+        return {
+            "attached": len(ids),
+            "material_ids": ids,
+            "goal_id": goal_id,
+            "unplaced": result.get("unplaced", 0) if result else 0,
+        }
     finally:
         conn.close()
 
@@ -954,18 +971,24 @@ async def chat(request: Request):
         history = db.list_chat_messages(conn)
         context = _build_chat_context(conn, _now_utc())
         now_iso = _now_utc()
-        with conn:  # single transaction: tool actions (settings/effort) + messages
-            result = client.chat(
-                message=message,
-                history=[dict(h) for h in history],
-                context=context,
-                conn=conn,
-                now_iso=now_iso,
-            )
-            reply = result["reply"]
-            llm = result.get("llm", "off")
-            db.add_chat_message(conn, role="user", content=message)
-            db.add_chat_message(conn, role="assistant", content=reply)
+        try:
+            with conn:  # single transaction: tool actions (settings/effort) + messages
+                result = client.chat(
+                    message=message,
+                    history=[dict(h) for h in history],
+                    context=context,
+                    conn=conn,
+                    now_iso=now_iso,
+                )
+                reply = result["reply"]
+                llm = result.get("llm", "off")
+                db.add_chat_message(conn, role="user", content=message)
+                db.add_chat_message(conn, role="assistant", content=reply)
+        except actions.ReplanError as exc:
+            # A replan-critical tool wrote a constraint then the replan failed:
+            # the `with conn:` context manager rolled the transaction back.
+            # Surface a normal error reply (HTTP 200) instead of a 500.
+            return JSONResponse({"error": exc.message}, status_code=200)
         out = {"reply": reply, "llm": llm}
         if result.get("actions"):
             out["actions"] = result["actions"]
@@ -1314,32 +1337,66 @@ async def annotate_events_endpoint(request: Request):
     events that have no annotation yet. Annotations sourced 'user' are
     never overwritten. LLM runs here are time-boxed (~45 s) and fall back
     to the heuristic for what they cannot cover.
+
+    ``force`` must be a JSON boolean when present; anything else is a 422.
+
+    The LLM call and heuristic evaluation run *outside* the write
+    transaction, so the SQLite write lock is never held during network I/O:
+    the transaction only covers the force-delete and the upserts.
     """
     body = await _read_body(request)
-    force = bool(body.get("force", False))
+    force = body.get("force", False)
+    if not isinstance(force, bool):
+        raise ValidationError("force must be a boolean")
+
     conn = _get_conn()
     try:
+        # ---- Phase 1: outside the write transaction ----
+        # Read-only lookups plus the (time-boxed, possibly slow) LLM call.
+        settings = parse_settings(db.list_settings(conn))
+        llm = llm_mod.LLMClient(settings) if settings.llm_enabled else None
+        externals = [
+            e
+            for e in db.list_events(conn)
+            if e.get("kind") == "external" and e.get("locked")
+        ]
+        annotated_ids = db.annotated_event_ids(conn)
+        user_marked = {
+            row["event_id"]
+            for row in db.list_annotations(conn)
+            if row.get("source") == "user"
+        }
+        to_delete_ids = {
+            e["id"] for e in externals if force and e["id"] not in user_marked
+        }
+        missing = [
+            e
+            for e in externals
+            if e["id"] not in annotated_ids or e["id"] in to_delete_ids
+        ]
+        items = (
+            annotate.fetch_annotation_items(conn, missing, llm=llm) if missing else {}
+        )
+
+        # ---- Phase 2: write transaction (delete + upserts only) ----
         with conn:
-            if force:
-                externals = [
-                    e for e in db.list_events(conn)
-                    if e.get("kind") == "external" and e.get("locked")
-                ]
-                user_marked = {
-                    row["event_id"]
-                    for row in db.list_annotations(conn)
-                    if row.get("source") == "user"
-                }
-                for e in externals:
-                    if e["id"] in user_marked:
-                        continue  # user annotations are never overwritten
-                    conn.execute(
-                        "DELETE FROM event_annotations WHERE event_id = ?", (e["id"],)
-                    )
-            settings = parse_settings(db.list_settings(conn))
-            llm = llm_mod.LLMClient(settings) if settings.llm_enabled else None
-            annotated = annotate_missing(conn, llm=llm)
-        return {"annotated": annotated}
+            for eid in to_delete_ids:
+                conn.execute(
+                    "DELETE FROM event_annotations WHERE event_id = ?", (eid,)
+                )
+            count = 0
+            for event in missing:
+                item = items[event["id"]]
+                db.upsert_annotation(
+                    conn,
+                    event["id"],
+                    subject=item["subject"],
+                    fatigue=item["fatigue"],
+                    source=item.get("source", "heuristic"),
+                    note=item.get("note"),
+                )
+                count += 1
+        return {"annotated": count}
     finally:
         conn.close()
 

@@ -28,7 +28,19 @@ from .config import (
     validate_effort_hours,
     validate_slot_minutes,
 )
-from .errors import NotFoundError, ValidationError
+from .errors import DynaCalendarError, NotFoundError, ValidationError
+
+
+class ReplanError(DynaCalendarError):
+    """The constraint was written, but the replan of open goals failed.
+
+    The caller's transaction must roll back (the constraint insert is undone);
+    validation failures (bad kind/params) raise ``ValidationError``/``ValueError``
+    *before* any write and keep the error-receipt behaviour.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, 409)
 
 
 def _now_utc() -> str:
@@ -270,13 +282,16 @@ def update_settings(
 
 # ----------------------------------------------------------- constraints
 
-def _replan_open_goals(conn, now_iso: str) -> int:
+def _replan_open_goals(conn, now_iso: str) -> tuple[int, int]:
+    """Replan every open goal; returns (goals_replanned, unplaced_demand)."""
     count = 0
+    unplaced = 0
     for goal in db.list_goals(conn):
         if goal["status"] == "open":
-            planner.replan(conn, goal["id"], now_iso)
+            result = planner.replan(conn, goal["id"], now_iso)
             count += 1
-    return count
+            unplaced += int(result.get("unplaced", 0))
+    return count, unplaced
 
 
 def constraint_out(row: dict) -> dict:
@@ -340,7 +355,12 @@ def add_constraint(
     params_serialized = serialise_params(params_norm)
     for row in db.list_constraints(conn):
         if row["kind"] == kind_text and row["params"] == params_serialized:
-            return {"constraint": constraint_out(row), "replanned_goals": 0, "existing": True}
+            return {
+                "constraint": constraint_out(row),
+                "replanned_goals": 0,
+                "existing": True,
+                "unplaced": 0,
+            }
     if label:
         label_text = str(label).strip()
         label_text = re.sub(r"[\x00-\x1f\x7f]", "", label_text)
@@ -355,13 +375,18 @@ def add_constraint(
         source=source if source in ("user", "llm") else "user",
         label=label_text,
     )
-    replanned = _replan_open_goals(conn, now_iso)
+    try:
+        replanned, unplaced = _replan_open_goals(conn, now_iso)
+    except Exception as exc:
+        # Constraint is written but the replan failed: roll back everything.
+        raise ReplanError(f"constraint saved but replan failed: {exc}") from exc
     row = next(
         r for r in db.list_constraints(conn) if r["id"] == constraint_id
     )
     return {
         "constraint": constraint_out(row),
         "replanned_goals": replanned,
+        "unplaced": unplaced,
     }
 
 
@@ -373,5 +398,8 @@ def remove_constraint(conn, constraint_id: Any, now_iso: str | None = None) -> d
         raise ValueError("constraint_id is required")
     if not db.delete_constraint(conn, cid):
         raise NotFoundError(f"constraint {cid} not found")
-    replanned = _replan_open_goals(conn, now_iso)
-    return {"deleted": cid, "replanned_goals": replanned}
+    try:
+        replanned, unplaced = _replan_open_goals(conn, now_iso)
+    except Exception as exc:
+        raise ReplanError(f"constraint deleted but replan failed: {exc}") from exc
+    return {"deleted": cid, "replanned_goals": replanned, "unplaced": unplaced}

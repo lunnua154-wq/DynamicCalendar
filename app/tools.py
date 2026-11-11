@@ -283,9 +283,40 @@ def _require(args: dict, key: str) -> Any:
 def dispatch(
     conn, name: str, arguments: dict, now_iso: str
 ) -> dict[str, Any]:
-    """Route a tool call to app.actions. Never raises: every failure becomes
-    {"error": <message>} so the LLM loop can keep going and report a receipt."""
+    """Route a tool call to app.actions.
+
+    Validation/coercion failures become ``{"error": <message>}`` receipts so the
+    LLM loop can keep going. For the replan-critical tools
+    (``add_constraint``, ``remove_constraint``) a failure *after* the constraint
+    write (the replan phase) raises ``actions.ReplanError`` so the caller's
+    transaction rolls back; validation failures (nothing written yet) still
+    return error receipts.
+    """
     args = dict(arguments or {})
+    if name == "add_constraint":
+        try:
+            return actions.add_constraint(
+                conn,
+                kind=_require(args, "kind"),
+                params=args.get("params") or {},
+                label=args.get("label"),
+                hard=args.get("hard", False),
+                source="llm",
+                now_iso=now_iso,
+            )
+        except actions.ReplanError:
+            raise  # replan-phase failure: the caller's transaction rolls back
+        except Exception as exc:  # validation: nothing written yet -> receipt
+            return {"error": str(exc)}
+    if name == "remove_constraint":
+        try:
+            return actions.remove_constraint(
+                conn, _require(args, "constraint_id"), now_iso=now_iso
+            )
+        except actions.ReplanError:
+            raise
+        except Exception as exc:  # validation/not-found: receipt
+            return {"error": str(exc)}
     try:
         if name == "list_goals":
             return {"goals": actions.list_goals(conn)}
@@ -307,20 +338,6 @@ def dispatch(
             return {"stats": actions.get_stats(conn, goal_id=args.get("goal_id"))}
         if name == "list_constraints":
             return {"constraints": actions.list_constraints(conn)}
-        if name == "add_constraint":
-            return actions.add_constraint(
-                conn,
-                kind=_require(args, "kind"),
-                params=args.get("params") or {},
-                label=args.get("label"),
-                hard=args.get("hard", False),
-                source="llm",
-                now_iso=now_iso,
-            )
-        if name == "remove_constraint":
-            return actions.remove_constraint(
-                conn, _require(args, "constraint_id"), now_iso=now_iso
-            )
         if name == "update_settings":
             changes: dict[str, Any] = {}
             for key in ("daily_capacity_hours", "slot_minutes"):

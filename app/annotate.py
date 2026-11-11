@@ -129,6 +129,65 @@ def _normalize_llm_item(item: Any, event_ids: set[str]) -> dict[str, Any] | None
     return {"event_id": event_id, "subject": subject, "fatigue": fatigue, "note": note}
 
 
+def _annotation_payload(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The LLM-facing payload for a list of external events."""
+    return [
+        {
+            "event_id": e["id"],
+            "title": e.get("title"),
+            "duration_minutes": event_duration_minutes(e),
+            "venue": e.get("venue"),
+        }
+        for e in events
+    ]
+
+
+def fetch_annotation_items(
+    conn,
+    events: list[dict[str, Any]],
+    *,
+    llm: Any = None,
+    time_budget_seconds: float | None = 45.0,
+) -> dict[str, dict[str, Any]]:
+    """Validate LLM/heuristic annotation items for ``events``.
+
+    The LLM call (network I/O) happens here, so callers must run this outside
+    any write transaction. Per-chunk failure isolation is preserved: a dead LLM
+    chunk degrades to the heuristic; total transport failure degrades every
+    event to the heuristic (never raises).
+
+    Returns ``{event_id: {"event_id", "subject", "fatigue", "source", "note"}}``
+    covering every event in ``events``.
+    """
+    llm_items: list[dict[str, Any]] = []
+    if llm is not None and time_budget_seconds != 0:
+        try:
+            llm_items = llm.annotate_events(
+                events=_annotation_payload(events), time_budget_seconds=time_budget_seconds
+            )
+        except Exception:
+            llm_items = []
+
+    llm_by_id = {item["event_id"]: item for item in llm_items}
+    out: dict[str, dict[str, Any]] = {}
+    for event in events:
+        item = llm_by_id.get(event["id"])
+        if item is not None:
+            out[event["id"]] = {**item, "source": "llm"}
+        else:
+            duration = event_duration_minutes(event)
+            all_day = bool(event.get("all_day"))
+            heuristic = heuristic_annotation(event.get("title"), duration, all_day=all_day)
+            out[event["id"]] = {
+                "event_id": event["id"],
+                "subject": heuristic["subject"],
+                "fatigue": heuristic["fatigue"],
+                "source": "heuristic",
+                "note": None,
+            }
+    return out
+
+
 def annotate_missing(conn, *, llm: Any = None, time_budget_seconds: float | None = 45.0) -> int:
     """Annotate every locked external event lacking an annotation.
 
@@ -146,45 +205,18 @@ def annotate_missing(conn, *, llm: Any = None, time_budget_seconds: float | None
     if not missing:
         return 0
 
-    payload = [
-        {
-            "event_id": e["id"],
-            "title": e["title"],
-            "duration_minutes": event_duration_minutes(e),
-            "venue": e.get("venue"),
-        }
-        for e in missing
-    ]
-    llm_items: list[dict[str, Any]] = []
-    if llm is not None and time_budget_seconds != 0:
-        try:
-            llm_items = llm.annotate_events(
-                events=payload, time_budget_seconds=time_budget_seconds
-            )
-        except Exception:
-            llm_items = []
-
-    llm_by_id = {item["event_id"]: item for item in llm_items}
+    items = fetch_annotation_items(conn, missing, llm=llm, time_budget_seconds=time_budget_seconds)
     count = 0
     for event in missing:
-        item = llm_by_id.get(event["id"])
-        if item is not None:
-            db.upsert_annotation(
-                conn,
-                event["id"],
-                subject=item["subject"],
-                fatigue=item["fatigue"],
-                source="llm",
-                note=item.get("note"),
-            )
-        else:
-            duration = event_duration_minutes(event)
-            all_day = bool(event.get("all_day"))
-            heuristic = heuristic_annotation(event.get("title"), duration, all_day=all_day)
-            db.upsert_annotation(
-                conn, event["id"], subject=heuristic["subject"],
-                fatigue=heuristic["fatigue"], source="heuristic",
-            )
+        item = items[event["id"]]
+        db.upsert_annotation(
+            conn,
+            event["id"],
+            subject=item["subject"],
+            fatigue=item["fatigue"],
+            source=item.get("source", "heuristic"),
+            note=item.get("note"),
+        )
         count += 1
     return count
 

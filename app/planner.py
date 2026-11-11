@@ -24,14 +24,21 @@ MAX_LLM_PLACEMENT_CALLS = 16
 MAX_LLM_PLACEMENT_SECONDS = 20.0
 
 
-def replan(conn, goal_id: str, now_iso: str) -> dict[str, Any]:
+def replan(conn, goal_id: str, now_iso: str, allow_llm_chooser: bool = True) -> dict[str, Any]:
     """Replan ``goal_id`` honouring ``llm_placement_mode``.
 
-    Returns the same dict as ``engine.replan``.
+    Returns the same dict as ``engine.replan``. When ``allow_llm_chooser`` is
+    False the LLM placement chooser is never injected, even if
+    ``llm_placement_mode='rank'`` and an endpoint is configured (used by the
+    ICS import path so LLM I/O never holds the import transaction).
     """
     settings = parse_settings(db.list_settings(conn))
     chooser = None
-    if getattr(settings, "llm_placement_mode", "off") == "rank" and settings.llm_enabled:
+    if (
+        allow_llm_chooser
+        and getattr(settings, "llm_placement_mode", "off") == "rank"
+        and settings.llm_enabled
+    ):
         # Lazy import: keeps llm -> tools -> actions -> planner acyclic.
         from .llm import LLMClient
 

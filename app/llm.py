@@ -19,7 +19,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from . import db
+from . import db, actions
 from .constraints import parse_nl, serialise_params
 from .config import (
     EFFORT_HOURS_MAX,
@@ -407,6 +407,11 @@ class LLMClient:
                         conn=conn,
                         now_iso=now_iso or _now_utc(),
                     )
+                except actions.ReplanError:
+                    # Constraint written but replan failed: propagate so the
+                    # caller's transaction rolls back instead of committing a
+                    # half-applied plan.
+                    raise
                 except Exception as exc:  # e.g. endpoint without tool support
                     error = _record_error("chat", exc)
                     tool_failure_kind = _error_kind(exc)
@@ -459,8 +464,9 @@ class LLMClient:
         """Bounded agent loop (max 5 rounds) over the narrow tool registry.
 
         Tool results are appended as tool messages; every outcome is recorded
-        in the returned ``actions`` receipts. Any exception degrades to the
-        offline fallback (never propagates).
+        in the returned ``actions`` receipts. Ordinary failures degrade to the
+        offline fallback; ``actions.ReplanError`` (constraint written, replan
+        failed) propagates so the caller's transaction rolls back.
         """
         system = (
             "You are a study calendar assistant. Use the narrow tools to read "
@@ -827,19 +833,21 @@ def _try_create_nl_constraint(conn: Any, message: str, now_iso: str) -> str | No
         if row["kind"] == parsed["kind"] and row["params"] == params_serialized:
             return f"That rule already exists — “{row['label']}” (id {row['id']})."
 
-    constraint_id = db.create_constraint(
+    # Create via the shared action so validation, de-dup, rank-aware replan and
+    # receipts are single-sourced (actions.add_constraint replans open goals).
+    out = actions.add_constraint(
         conn,
         kind=parsed["kind"],
-        params=params_serialized,
+        params=parsed["params"],
+        label=parsed["label"],
         hard=False,
         source="user",
-        label=parsed["label"],
+        now_iso=now_iso,
     )
-    replanned = 0
-    for goal in db.list_goals(conn):
-        if goal["status"] == "open":
-            _engine.replan(conn, goal["id"], now_iso)
-            replanned += 1
+    replanned = int(out.get("replanned_goals", 0))
     suffix = f" Re-planned {replanned} open goal(s)." if replanned else ""
-    return f"Got it — saved the rule “{parsed['label']}” (id {constraint_id}).{suffix}"
+    return (
+        f"Got it — saved the rule “{parsed['label']}” "
+        f"(id {out['constraint']['id']}).{suffix}"
+    )
 
