@@ -40,7 +40,9 @@ ISO-8601 timestamps are also accepted (then they are exact, `to` exclusive).
 | `GET /api/goals` | — | `[{id, title, deadline, exam_event_id, status, progress, total_effort_hours, done_effort_hours, planned_jobs, done_jobs}]` |
 | `GET /api/goals/{id}` | — | same row + progress fields |
 | `POST /api/goals` | `{title, deadline?, exam_event_id?}` | goal row + progress; triggers `replan` if a deadline is known |
-| `POST /api/goals/{id}/replan` | — | `{moved_jobs: [ids], revisions_added: [ids], moved_count, unplaced}` — `unplaced` counts jobs that could not fit anywhere before the deadline (capacity exhausted, not a preference failure) and would otherwise have vanished silently |
+| `POST /api/goals/{id}/replan` | — | `{moved_jobs: [ids], revisions_added: [ids], moved_count, unplaced}` — `unplaced` counts lost **material demand slots**: the summed remaining demand (per-material unschedulable slots) that could not be placed before the deadline — capacity exhausted, not a preference failure — work that would otherwise have vanished silently |
+
+`unplaced` is summed across the re-planned goal and surfaced additively on every replan-triggering write receipt: the checkbox-tick response (`POST /api/jobs/{id}/complete`), the move-job response (`POST /api/jobs/{id}/move`), `POST /api/inbox/attach_ready`, and the constraint add/remove receipts (aggregated across open goals). See the Jobs, Inbox and Constraints sections below for each response shape.
 
 `deadline` may be omitted when `exam_event_id` is supplied: the server derives it
 from that external event. If neither is present → **422**.
@@ -49,8 +51,8 @@ from that external event. If neither is present → **422**.
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /api/jobs?from=&to=` | — | `[{id, kind, title, material_id, material_title, slot_start, slot_end, duration_min, status, revision_round, pinned, placement_source, placement_note}]` — `title` = the file name; `placement_source`/`placement_note` explain why this slot was chosen (`engine` = deterministic argmin-penalty pick, `llm` = LLM shortlist pick, `note` carries the reason) |
-| `POST /api/jobs/{id}/complete` | — | `{replanned: [ids], revisions_added: [ids]}` — **one atomic transaction**; idempotent for an already-done job |
-| `POST /api/jobs/{id}/move` | `{slot_start, slot_end}` | `{job, moved_jobs}` — sets `pinned=1`, reflows the rest; **409** if overlapping an external event, another job, after the goal deadline, or before now |
+| `POST /api/jobs/{id}/complete` | — | `{replanned: [ids], revisions_added: [ids], unplaced}` — **one atomic transaction**; idempotent for an already-done job; `unplaced` is the summed lost demand across the re-planned goal |
+| `POST /api/jobs/{id}/move` | `{slot_start, slot_end}` | `{job, moved_jobs, unplaced}` — sets `pinned=1`, reflows the rest; `unplaced` is the summed lost demand across the re-planned goal; **409** if overlapping an external event, another job, after the goal deadline, or before now |
 | `POST /api/jobs/{id}/skip` | — | job row (`status='skipped'`); replans the goal |
 
 Move accepts ISO-8601 with or without milliseconds/`Z`. `slot_end` must be after
@@ -66,7 +68,7 @@ not pin.
 | `POST /api/inbox/files/{id}/dismiss` | `{action: 'duplicate'\|'superseded'\|'new'}` | material row — user override; replans the goal |
 | `POST /api/inbox/files/{id}/effort` | `{hours}` | material row — user override (bounds-validated); replans the goal |
 | `POST /api/inbox/files/{id}/attach` | `{goal_id}` | material row — attach to a goal and replan; **404** if the goal is missing |
-| `POST /api/inbox/attach_ready` | `{"goal_id"}` | `{attached, material_ids, goal_id}` — attaches every `ready` material with no goal and replans **once**; **404** if the goal is missing |
+| `POST /api/inbox/attach_ready` | `{"goal_id"}` | `{attached, material_ids, goal_id, unplaced}` — attaches every `ready` material with no goal and replans **once**; `unplaced` is the summed lost demand across the goal; **404** if the goal is missing |
 
 A hash-duplicate creates a distinct `duplicate` material row linked via
 `duplicate_of` (the original keeps its files). Unsupported formats produce a row
@@ -109,9 +111,9 @@ User/LLM-authored scheduling preference rules, stored as data and enforced deter
 
 | Method & path | Body | Returns |
 |---|---|---|
-| `GET /api/constraints` | — | `[{id, kind, params, hard, enabled, source: 'user'\|'llm', label, created_at}]` |
-| `POST /api/constraints` | `{kind, params, hard?, label?}` | `{constraint: {...}, replanned_goals: n}` — **201**; open goals are re-planned immediately |
-| `DELETE /api/constraints/{id}` | — | `{deleted: id, replanned_goals: n}` — **404** if unknown |
+| `GET /api/constraints` | — | `[{id, kind, params, hard, enabled, source: 'user'\|'llm', label, created_at}]` — hand-corrupted rows (out-of-band edits) are returned with `"broken": true` and empty `params` instead of crashing the list |
+| `POST /api/constraints` | `{kind, params, hard?, label?}` | `{constraint: {...}, replanned_goals: n, unplaced}` — **201**; open goals are re-planned immediately. An idempotent re-POST of an identical rule (de-dups on `kind`+`params`) returns `{"existing": true, ...}` with `replanned_goals: 0`, `unplaced: 0`, and **no replan** |
+| `DELETE /api/constraints/{id}` | — | `{deleted: id, replanned_goals: n, unplaced}` — **404** if unknown |
 
 Kinds and params (bounds-validated, **422** otherwise):
 `post_fatigue_buffer` `{min_fatigue: 1–3, buffer_minutes: 15–240}` — no study within N min of a fatigue≥M event;
@@ -123,6 +125,12 @@ Add `hard: true` to any kind to exclude matching slots outright — except
 (auto-generated from kind+params). `blocked_day_part` blocks on interval
 overlap (a 50-minute slot starting 11:30 overlaps a 12:00–13:00 block), not
 just the slot's start hour.
+
+**Boolean params are strict.** `hard` on `POST /api/constraints` and `force`
+on `POST /api/events/annotate` (and boolean params generally) must be real JSON
+booleans: `"false"`, `"true"`, `1`, `0`, `"yes"` etc. are rejected with **422** —
+they are never silently coerced. The same strict check applies to the chat
+`add_constraint` tool.
 
 ## Settings
 | Method & path | Body | Returns |

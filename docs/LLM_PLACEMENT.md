@@ -131,12 +131,15 @@ When `rank` and an LLM is configured, each placeable job is offered a
 - the 2 earliest valid slots,
 - the 2 lowest-penalty slots,
 
-…de-duplicated, each annotated with machine-readable features (fatigue of the
-preceding event, subject match, day part, penalty breakdown). The model answers
+…de-duplicated, each entry `{index, slot_start, slot_end, penalty, reasons}`
+(fatigue of the preceding event, subject match and day-part facts are conveyed
+inside `reasons`, not as separate top-level fields). The model answers
 with `{"choice": <index>, "reason": "…"}`. Validation: index in range, reason
-clamped to 200 chars; anything else → deterministic pick. One LLM call per job,
-capped at `MAX_LLM_PLACEMENT_CALLS` (16) and `MAX_LLM_PLACEMENT_SECONDS` (20) per
-replan, shared between learn and revision placements. `temperature=0`.
+clamped to 180 chars; anything else → deterministic pick. One LLM call per job,
+capped at `MAX_LLM_PLACEMENT_CALLS` (16) calls and `MAX_LLM_PLACEMENT_SECONDS`
+(20 s) of wall-clock per replan, shared between learn and revision placements;
+each call's timeout is `min(15, remaining)` so a slow endpoint cannot eat the
+whole budget. `temperature=0`.
 
 Why a shortlist instead of letting the LLM emit arbitrary datetimes?
 Verification is then **membership in a hard-valid set** — sound by construction,
@@ -157,7 +160,10 @@ verifier; per-replan batched placement in a single prompt.
    placement invariants remain green under either setting).
 2. **Annotations** — heuristic at import + app startup; LLM (chunked,
    time-boxed) only on explicit `POST /api/events/annotate {"force": true}`.
-   Table + `db` helpers.
+   Table + `db` helpers. Import-time replans are deterministic by design: the
+   LLM chooser is bypassed (`allow_llm_chooser=False`), which bounds
+   write-transaction time on bulk import; constraint add/remove and ticks still
+   rank with the LLM when `llm_placement_mode='rank'`.
 3. **Constraints** — table, validators, scorer, REST CRUD
    (`GET/POST/DELETE /api/constraints[/{id}]`), applied by the engine;
    `hard` relaxation rule.
@@ -247,9 +253,11 @@ headline behaviours broken. Both are fixed; the honest status:
 - **Adjacency is a touching chain.** The built-in "right after" rule and
   `interleave` now penalise only candidates directly touching a same-subject
   run (a free slot or a foreign-subject job in between costs nothing) —
-  candidate-dependent, so argmin is genuinely steered. Learn placement is
-  round-robin least-recently-used-subject, so cross-subject interleaving
-  materialises in the plan rather than only in receipts.
+  candidate-dependent, so argmin is genuinely steered. Learn placement takes
+  the first queued material whose primary subject differs from the last placed
+  subject (else placement order, index 0, as a deterministic fallback);
+  materials keep creation order within a subject round, so cross-subject
+  interleaving materialises in the plan rather than only in receipts.
 - **Built-in 60-minute windows no longer stretch** when a longer user
   constraint window exists (`subject_gap 240` no longer smears "within 60 min"
   penalties 200 minutes past the event).

@@ -35,7 +35,9 @@ Docker image.
   the configured LLM picks from a ≤4 shortlist of **hard-valid** candidates;
   any failure falls back to the deterministic scorer.
 - Every job records `placement_source` and `placement_note` — the week view
-  shows a truncated "why: …" line with the full reason on hover.
+  shows a truncated "why: …" line with the full reason on hover. Replan
+  receipts surface `unplaced` (lost material demand that could not be placed
+  before the deadline) on tick, move, attach_ready and constraint add/remove.
 
 - **M2** — settings panel for any OpenAI-compatible endpoint; auto-tag, de-dup,
   and topic clustering (`new`/`duplicate`/`version`); grounded chat.

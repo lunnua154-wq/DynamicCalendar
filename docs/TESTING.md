@@ -26,7 +26,7 @@ thick enough to catch regressions. Fixtures: `samples/` (see its README — UIDs
 | E12 | pinned jobs survive replan | move a future job, replan → exact same slot |
 | E13 | revisions obey capacity/deadline | many learn completions on 1 h/day; no day over capacity, no revision after the deadline |
 
-## Placement — `tests/test_placement.py` + `tests/test_placement_review.py` (better-llm-utilisation)
+## Placement — `tests/test_placement.py`, `tests/test_placement_review.py` and `tests/test_premerge_fixes.py` (better-llm-utilisation)
 Covers the placement machinery on top of the E1–E13 harness:
 | # | Invariant | Fixture setup |
 |---|---|---|
@@ -51,6 +51,7 @@ Covers the placement machinery on top of the E1–E13 harness:
 | P19 | no feasible slot at all (capacity exhausted) → `unplaced` receipt, no crash | 0.5 h capacity → replan returns `unplaced ≥ 1` |
 | P20 | annotations: zero-budget path skips LLM entirely; chunks of 15 validated independently | exploding fake w/ budget=0; 32-event batch → 3 create calls |
 | P21 | `force` re-annotation preserves `source='user'` rows | annotate endpoint with a pre-seeded user annotation |
+| — | `tests/test_premerge_fixes.py` (pre-merge hardening regressions) | F1–F7, B1–B5, C1–C7: `unplaced` counts remaining demand; strictest `interleave` row wins; corrupt-annotation tolerance; `upsert_annotation` user-guard; strict booleans → 422; per-call chooser timeout `min(15, remaining)`; `PRAGMA busy_timeout=10000`; annotate fetch outside the write txn; `unplaced` on every replan receipt; import/startup chooser bypass; offline NL via `actions.add_constraint`; chat replan failure rolls back |
 
 Chat flows — `tests/test_chat_constraints.py`: LLM tool path (add/list/remove_constraint tool calls) and the offline NL path ("avoid math right after math class" creates a `subject_gap` rule and re-plans open goals, no LLM key needed; unknown subjects get guidance instead of a dead rule; identical rules dedupe).
 Constraint validation/NL parsing — `tests/test_constraints.py`; REST CRUD — `tests/test_constraints_api.py` (422s, 404s, `smart_placement`/`llm_placement_mode` key validation); LLM skill contracts — `tests/test_llm_placement.py`.

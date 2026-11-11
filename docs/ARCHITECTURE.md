@@ -37,8 +37,9 @@ POST /api/ics/import (multipart file)
       HEURISTIC only — deterministic, instant, never able to stall the HTTP
       response; LLM annotation is available on demand via
       POST /api/events/annotate {"force": true} (chunked, ~45 s budget)
-      (pre-upgrade databases are heuristic-backfilled once at app startup)
-  → engine.replan() for every open goal
+      (pre-upgrade databases are heuristic-backfilled at every app startup — idempotent, no LLM calls)
+  → engine.replan() for every open goal (deterministic — `allow_llm_chooser=False`,
+     so LLM ranking never holds the import transaction; see the placement pipeline)
     (pinned jobs that now overlap an imported external are deleted
      and re-placed unpinned; pinned jobs that don't overlap stay put)
   → exams detected are reported with their event ids
@@ -105,9 +106,11 @@ remaining = goal.effort_total − done_effort(goal)
      • if even relaxed candidates can't fit (capacity/deadline exhausted),
        the material is not silently dropped: engine returns `unplaced` > 0
        and the replan receipt surfaces it
-   Learn work is placed least-recently-used-subject first (round-robin across
-   subjects) instead of per-material packing, so interleaving works; materials
-   keep creation order within a subject round.
+   Learn work is placed subject-interleaved: the planner takes the first queued
+   material whose primary subject differs from the last placed subject; if every
+   queued material shares that subject it falls back to placement order (index 0)
+   — deterministic, not strict round-robin. Materials keep creation order within a
+   subject round, so interleaving materialises in the plan rather than only in receipts.
 3. PULL-FORWARD: if remaining hits 0 before the deadline, the next
    material is scheduled immediately (the plan stays "full and current")
 4. REVISIONS: after a learn job completes, rounds at +1d/+3d/+7d/+14d;
@@ -136,10 +139,13 @@ ICS import ──► annotate_missing()               (app/annotate.py)
             │   all-day → 0) + subject (keyword/regex map)
             └─ LLM chunks of 15 (explicit `POST /api/events/annotate`, ~45 s
                 budget, per-chunk failure isolation; per-item validated).
-                App startup and ICS import are heuristic-only.
+                App startup and ICS import are heuristic-only: the backfill
+                runs at every startup, is idempotent (skips already-annotated
+                events), makes no LLM calls, and never stalls the response.
             ▼
    event_annotations table  ◄── POST /api/events/annotate {force?}
-   (app startup backfills pre-upgrade databases, heuristic-only)
+   (app startup backfills pre-upgrade databases at every start — idempotent,
+    heuristic-only, no LLM calls)
 
 replan ──► candidates = all hard-valid slots (today → deadline)
         ──► score_slot(...)                     (app/constraints.py)
@@ -150,14 +156,23 @@ replan ──► candidates = all hard-valid slots (today → deadline)
         ├─ chooser off/None → argmin(penalty, start)
         └─ chooser on (llm_placement_mode=rank) → planner builds chooser →
               LLMClient.choose_placement(): shortlist prompt, JSON answer,
-              index validated ∈ [0, len), reason clamped 200 chars;
-              anything else → deterministic fallback; ≤16 LLM calls per replan
+              index validated ∈ [0, len), reason clamped 180 chars;
+              anything else → deterministic fallback; ≤16 LLM calls per replan;
+              the placement note written on each job is capped at 250 chars
 
 constraints table ◄── POST /api/constraints · chat tool add_constraint ·
                       offline NL parser (chat "avoid math right after math class")
    params validated per kind (subject_gap / post_fatigue_buffer / interleave /
    blocked_day_part); enabled/hard/source(llm|user) stored
 ```
+
+**ICS import replans bypass the LLM chooser.** `POST /api/ics/import` calls
+`planner.replan(..., allow_llm_chooser=False)` so every open goal is re-planned
+deterministically inside the import transaction — this bounds write-transaction
+time on bulk import and keeps LLM I/O out of the write path entirely. Constraint
+add/remove (`POST`/`DELETE /api/constraints`) and the checkbox tick
+(`POST /api/jobs/{id}/complete`) still go through `planner.replan` with the
+chooser allowed, so they rank with the LLM when `llm_placement_mode='rank'`.
 
 The LLM never appears in `engine.py`. `app/planner.py` wires the chooser;
 `engine.replan(..., chooser=None)` remains a pure function of its inputs.
