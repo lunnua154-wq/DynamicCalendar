@@ -126,7 +126,11 @@ async function loadEvents() {
     calendar.removeAllEvents();
     jobCbById.clear();
     events.forEach((e) => {
-      const draggable = e.kind !== "external";
+      const done = e.job && e.job.status === "done";
+      // External events are fixed (AGENTS.md #2) and completed jobs are
+      // immutable (AGENTS.md #3): neither may be dragged. Done jobs used to be
+      // rendered draggable, and the drop was then silently swallowed.
+      const draggable = e.kind !== "external" && !done;
       calendar.addEvent({
         id: e.id,
         title: e.title,
@@ -431,10 +435,13 @@ calendar = new Calendar(calendarEl, {
   },
   eventAllow: (dropInfo) => {
     if (!draggedJobId) return true;
-    // Never drop a job onto or over an external event.
-    const dur = draggedDuration || 50;
-    const ds = dropInfo.date;
-    const de = new Date(ds.getTime() + dur * 60000);
+    // FullCalendar v6 passes a DateSpanApi here — { start, end, allDay, ... }.
+    // There is no `dropInfo.date`; the old code read one, got `undefined`, and
+    // every comparison below failed, so this callback vetoed *every* drop and
+    // jobs could never be dragged anywhere.
+    const ds = dropInfo.start;
+    if (!ds) return true;
+    const de = dropInfo.end ?? addMinutes(ds, draggedDuration || 50);
     const overExternal = calendar.getEvents().some((e) => {
       if (e.extendedProps.kind !== "external") return false;
       const es = new Date(e.start);
@@ -464,7 +471,12 @@ calendar = new Calendar(calendarEl, {
   },
   eventDrop: async (info) => {
     const job = info.event.extendedProps.job;
-    if (!job || job.status === "done") return;
+    if (!job || job.status === "done") {
+      // Shouldn't be reachable (done jobs are not editable), but never leave
+      // a done job visually moved without a server write behind it.
+      info.revert();
+      return;
+    }
     const startIso = isoSeconds(info.event.start);
     const endIso = info.event.end ? isoSeconds(info.event.end) : isoSeconds(addMinutes(info.event.start, draggedDuration || 50));
     try {
