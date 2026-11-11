@@ -1,0 +1,89 @@
+name: build-exe
+
+# Builds the standalone Windows build (DynaCalendar.exe) and attaches it to a
+# GitHub Release, so the teaching team can download a runnable build without
+# installing Python or Node.
+#
+# Triggers:
+#   - manually (Actions -> build-exe -> Run workflow)
+#   - on a published release (the exe is attached to it automatically)
+#   - on pushes to main that touch the app, the frontend, or the launcher
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "web/**"
+      - "samples/**"
+      - "launcher.py"
+      - "requirements.txt"
+      - ".github/workflows/build-exe.yml"
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Run the test suite
+        run: pytest -q
+
+      - name: Build the frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the standalone exe
+        run: >
+          pyinstaller --noconfirm --onefile --name DynaCalendar --paths .
+          --runtime-tmpdir "."
+          --add-data "web/dist;web/dist"
+          --add-data "samples;samples"
+          --collect-submodules uvicorn
+          --collect-submodules markitdown
+          --collect-all magika
+          launcher.py
+
+      - name: Package the release zip
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item dist\DynaCalendar.exe out\DynaCalendar.exe
+          Copy-Item packaging\README-Windows.txt out\README.txt
+          Compress-Archive -Path out\* -DestinationPath DynaCalendar-win64.zip -Force
+
+      - name: Upload the build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DynaCalendar-win64
+          path: DynaCalendar-win64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach the zip to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DynaCalendar-win64.zip
