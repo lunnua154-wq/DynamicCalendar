@@ -166,8 +166,16 @@ async function tickJob(jobId) {
   loadEvents();
 }
 
+// FullCalendar v6 re-lays out on window resize only, not when a sibling DOM
+// node toggles — without updateSize() the grid kept its full width and the
+// overflow-hidden row clipped the Friday/Saturday columns behind the panel.
+function resizeCalendar() {
+  requestAnimationFrame(() => calendar && calendar.updateSize());
+}
+
 function openDay(date) {
   dayPanel.classList.toggle("hidden", false);
+  resizeCalendar();
   setText(dayPanelDate, utcDay(date));
   dayPanelList.innerHTML = "";
   // gather events for that day
@@ -235,7 +243,10 @@ function openDay(date) {
   });
 }
 
-btnClose.onclick = () => dayPanel.classList.toggle("hidden", true);
+btnClose.onclick = () => {
+  dayPanel.classList.toggle("hidden", true);
+  resizeCalendar();
+};
 btnToday.onclick = () => calendar.today();
 btnPrevMonth.onclick = () => calendar.prev();
 btnNextMonth.onclick = () => calendar.next();
@@ -330,6 +341,7 @@ calendar = new Calendar(calendarEl, {
   datesSet: loadEvents,
 });
 calendar.render();
-loadEvents();
+// datesSet drives loadEvents() (initial render + every navigation); a manual
+// call here would double-fetch and stack duplicate error toasts.
 initSettings(btnSettings);
 initTour("calendar");
