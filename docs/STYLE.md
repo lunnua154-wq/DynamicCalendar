@@ -15,7 +15,7 @@
 - ES2022; no framework; Vite is the **only** build step (`npm run dev` / `npm run build` → `web/dist/`)
 - Shared: `web/common.js` (`api()` fetch wrapper + small render helpers); one script per page
 - **User data rendered via `textContent` only** — never `innerHTML` with user strings
-- Tailwind v4 for all styling; theme tokens in `web/tailwind.css` (colors: `external` / `study` / `revision` + status tints); light theme only (M0)
+- Tailwind v4 for all styling; theme tokens in `web/tailwind.css` — Material 3 light scheme (primary/secondary/tertiary/error roles, surface containers, outline) + project kind tokens (`external` / `study` / `revision` / `done`) + status tints; light theme only (M0)
 - FullCalendar v7 standard (MIT), vanilla JS connector:
   - month = `dayGridMonth`, week = `timeGridWeek`
   - event cards: `eventContent` (checkbox cards for study/revision jobs); all styling via Tailwind classes passed through `eventClass`

@@ -13,20 +13,26 @@ function ensureToastContainer() {
   return toastContainer;
 }
 
+const TOAST_ICONS = { info: "ⓘ", success: "✓", error: "⚠" };
+
 export function toast(message, kind = "info") {
   ensureToastContainer();
   const el = document.createElement("div");
+  // Material 3 snackbar: single inverse-surface container, one short message,
+  // kind conveyed by a leading glyph rather than a saturated background.
   // max-w + break-words: an unbounded toast with a long server message used to
   // stretch across the whole viewport (covering the header and the Saturday
   // column) and get clipped on the left.
-  const base = "px-4 py-3 rounded shadow-lg text-sm flex items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-300 max-w-sm break-words";
-  const kindMap = {
-    info: "bg-blue-500/90 text-white",
-    success: "bg-emerald-500/90 text-white",
-    error: "bg-rose-500/90 text-white",
-  };
-  el.className = base + " " + kindMap[kind];
-  el.textContent = String(message);
+  el.className =
+    "px-4 py-3 rounded-md shadow-lg text-sm flex items-center gap-3 max-w-sm break-words bg-inverse-surface text-inverse-on-surface";
+  const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
+  icon.className = "shrink-0 text-inverse-primary";
+  icon.textContent = TOAST_ICONS[kind] || TOAST_ICONS.info;
+  const text = document.createElement("span");
+  text.textContent = String(message);
+  el.appendChild(icon);
+  el.appendChild(text);
   toastContainer.appendChild(el);
   setTimeout(() => {
     el.style.opacity = "0";
@@ -37,23 +43,23 @@ export function toast(message, kind = "info") {
 export async function dialog(title, message) {
   return new Promise((resolve) => {
     const backdrop = document.createElement("div");
-    backdrop.className = "fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center";
+    backdrop.className = "fixed inset-0 z-[60] bg-on-surface/40 flex items-center justify-center";
     const card = document.createElement("div");
-    card.className = "bg-white rounded-xl p-6 shadow-2xl w-96 text-sm";
+    card.className = "bg-surface-container-high text-on-surface rounded-[28px] p-6 shadow-xl w-96 text-sm";
     card.innerHTML = ""; // cleared below; we use textContent for user strings
     const h = document.createElement("h3");
-    h.className = "font-semibold mb-2";
+    h.className = "text-lg font-medium mb-2 text-on-surface";
     h.textContent = title;
     const p = document.createElement("p");
-    p.className = "text-slate-600 mb-4";
+    p.className = "text-on-surface-variant mb-5";
     p.textContent = message;
     const btns = document.createElement("div");
     btns.className = "flex justify-end gap-2";
     const ok = document.createElement("button");
-    ok.className = "px-3 py-1.5 rounded bg-blue-600 text-white text-sm";
+    ok.className = "px-5 py-2 rounded-full bg-primary text-on-primary text-sm font-medium hover:shadow-md";
     ok.textContent = "OK";
     const cancel = document.createElement("button");
-    cancel.className = "px-3 py-1.5 rounded bg-slate-200 text-slate-700 text-sm";
+    cancel.className = "px-4 py-2 rounded-full text-primary text-sm font-medium hover:bg-primary/10";
     cancel.textContent = "Cancel";
     btns.appendChild(cancel);
     btns.appendChild(ok);
@@ -79,30 +85,30 @@ export async function dialog(title, message) {
 export function promptDialog(title, label, value = "") {
   return new Promise((resolve) => {
     const backdrop = document.createElement("div");
-    backdrop.className = "fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center";
+    backdrop.className = "fixed inset-0 z-[60] bg-on-surface/40 flex items-center justify-center";
     const card = document.createElement("div");
-    card.className = "bg-white rounded-xl p-6 shadow-2xl w-96 text-sm";
+    card.className = "bg-surface-container-high text-on-surface rounded-[28px] p-6 shadow-xl w-96 text-sm";
     card.innerHTML = "";
     const h = document.createElement("h3");
-    h.className = "font-semibold mb-2";
+    h.className = "text-lg font-medium mb-2 text-on-surface";
     h.textContent = title;
     card.appendChild(h);
     const p = document.createElement("p");
-    p.className = "text-slate-600 mb-3";
+    p.className = "text-on-surface-variant mb-3";
     p.textContent = label;
     card.appendChild(p);
     const input = document.createElement("input");
     input.type = "text";
     input.value = value;
-    input.className = "w-full border border-slate-300 rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-4";
+    input.className = "w-full border border-outline rounded-lg bg-transparent text-on-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary mb-5";
     card.appendChild(input);
     const btns = document.createElement("div");
     btns.className = "flex justify-end gap-2";
     const ok = document.createElement("button");
-    ok.className = "px-3 py-1.5 rounded bg-blue-600 text-white text-sm";
+    ok.className = "px-5 py-2 rounded-full bg-primary text-on-primary text-sm font-medium hover:shadow-md";
     ok.textContent = "Save";
     const cancel = document.createElement("button");
-    cancel.className = "px-3 py-1.5 rounded bg-slate-200 text-slate-700 text-sm";
+    cancel.className = "px-4 py-2 rounded-full text-primary text-sm font-medium hover:bg-primary/10";
     cancel.textContent = "Cancel";
     btns.appendChild(cancel);
     btns.appendChild(ok);
@@ -248,14 +254,14 @@ export function initSettings(btnEl) {
   if (!modal) {
     modal = document.createElement("div");
     modal.id = "settings-modal";
-    // Single dim layer: the modal carries bg-black/60. The old separate
+    // Single dim layer: the modal carries the scrim. The old separate
     // “backdrop” div painted over the card and swallowed every click; the
     // card is now positioned and only clicks on the dimmed area close.
     modal.className =
-      "hidden fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center";
+      "hidden fixed inset-0 z-[70] bg-on-surface/40 flex items-center justify-center";
     const card = document.createElement("div");
     card.className =
-      "relative bg-white rounded-xl shadow-2xl border border-slate-200 w-96 p-6 max-w-md mx-4";
+      "relative bg-surface-container-high text-on-surface rounded-[28px] shadow-xl w-96 max-w-md mx-4 p-6 max-h-[90vh] overflow-y-auto";
     modal.appendChild(card);
     modal.addEventListener("click", (e) => {
       if (e.target === modal) closeModal();
@@ -332,7 +338,7 @@ export function initSettings(btnEl) {
       const status = await api("llm/status");
       const err = status && status.last_error;
       if (err) {
-        result.className = "text-[11px] mb-3 text-rose-700 whitespace-pre-line";
+        result.className = "text-[11px] mb-3 text-error whitespace-pre-line";
         result.textContent = `Last LLM error (${err.skill}): ${err.message}`;
       } else {
         result.textContent = "";
@@ -347,13 +353,13 @@ export function initSettings(btnEl) {
     const status = document.getElementById("st-status");
     if (enabled) {
       status.textContent = `LLM: on — ${values.llm_model} @ ${values.llm_base_url}`;
-      status.className = "text-xs mb-2 text-emerald-700 whitespace-pre-line break-all";
+      status.className = "text-xs mb-2 text-emerald-800 whitespace-pre-line break-all";
     } else if (values.llm_base_url || values.llm_model) {
       status.textContent = "LLM: off — both a base URL and a model are required (offline mode)";
-      status.className = "text-xs mb-2 text-amber-700 whitespace-pre-line";
+      status.className = "text-xs mb-2 text-amber-800 whitespace-pre-line";
     } else {
       status.textContent = "LLM: off — offline mode (deterministic fallbacks)";
-      status.className = "text-xs mb-2 text-slate-500 whitespace-pre-line";
+      status.className = "text-xs mb-2 text-on-surface-variant whitespace-pre-line";
     }
   }
 
@@ -418,7 +424,7 @@ export function initSettings(btnEl) {
   // render form
   card.innerHTML = "";
   const title = document.createElement("h3");
-  title.className = "font-semibold mb-4";
+  title.className = "text-lg font-medium text-on-surface mb-4";
   title.textContent = "Settings";
   card.appendChild(title);
   const form = document.createElement("div");
@@ -426,13 +432,13 @@ export function initSettings(btnEl) {
   fields.forEach((spec) => {
     const wrap = document.createElement("div");
     const label = document.createElement("label");
-    label.className = "block text-xs text-slate-500 mb-1";
+    label.className = "block text-xs text-on-surface-variant mb-1";
     label.textContent = spec.label;
     let input;
     if (spec.type === "select") {
       input = document.createElement("select");
       input.className =
-        "w-full border border-slate-300 rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white";
+        "w-full border border-outline rounded-lg bg-transparent text-on-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary";
       (spec.options || []).forEach((opt) => {
         const o = document.createElement("option");
         o.value = opt;
@@ -444,7 +450,7 @@ export function initSettings(btnEl) {
       input.type = spec.type;
       input.placeholder = spec.placeholder;
       input.className =
-        "w-full border border-slate-300 rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none";
+        "w-full border border-outline rounded-lg bg-transparent text-on-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary";
       if (spec.min !== undefined) input.min = spec.min;
       if (spec.max !== undefined) input.max = spec.max;
       if (spec.step !== undefined) input.step = spec.step;
@@ -456,7 +462,7 @@ export function initSettings(btnEl) {
   });
   const status = document.createElement("p");
   status.id = "st-status";
-  status.className = "text-xs mb-2 text-slate-500";
+  status.className = "text-xs mb-2 text-on-surface-variant";
   status.textContent = "Loading…";
   const llmResult = document.createElement("p");
   llmResult.id = "st-llm-result";
@@ -465,30 +471,30 @@ export function initSettings(btnEl) {
   card.appendChild(status);
   card.appendChild(llmResult);
   const btns = document.createElement("div");
-  btns.className = "flex items-center justify-end gap-2 pt-3 border-t border-slate-100";
+  btns.className = "flex items-center justify-end gap-2 pt-3 border-t border-outline-variant";
   const test = document.createElement("button");
   test.id = "st-llm-test";
   test.type = "button";
   test.className =
-    "mr-auto px-3 py-1.5 rounded border border-slate-300 text-sm text-slate-700 hover:bg-slate-50";
+    "mr-auto px-4 h-9 rounded-full border border-outline text-sm font-medium text-primary hover:bg-primary/10";
   test.textContent = "Test connection";
   test.onclick = async () => {
     const previous = test.textContent;
     test.disabled = true;
     test.textContent = "Testing…";
-    llmResult.className = "text-[11px] mb-3 text-slate-500";
+    llmResult.className = "text-[11px] mb-3 text-on-surface-variant";
     llmResult.textContent = "";
     try {
       const result = await api("llm/test", { method: "POST" });
       if (result.ok) {
-        llmResult.className = "text-[11px] mb-3 text-emerald-700";
+        llmResult.className = "text-[11px] mb-3 text-emerald-800";
         llmResult.textContent = `OK — ${result.model} replied in ${result.latency_ms} ms`;
       } else {
-        llmResult.className = "text-[11px] mb-3 text-rose-700 whitespace-pre-line";
+        llmResult.className = "text-[11px] mb-3 text-error whitespace-pre-line";
         llmResult.textContent = `Failed (${result.kind || "error"}): ${result.error || "no response"}`;
       }
     } catch (err) {
-      llmResult.className = "text-[11px] mb-3 text-rose-700";
+      llmResult.className = "text-[11px] mb-3 text-error";
       llmResult.textContent = "Test failed: " + err.message;
     } finally {
       test.disabled = false;
@@ -497,11 +503,11 @@ export function initSettings(btnEl) {
   };
   const cancel = document.createElement("button");
   cancel.id = "st-cancel";
-  cancel.className = "px-3 py-1.5 rounded border border-slate-300 text-sm hover:bg-slate-50";
+  cancel.className = "px-4 h-9 rounded-full text-sm font-medium text-primary hover:bg-primary/10";
   cancel.textContent = "Cancel";
   const save = document.createElement("button");
   save.id = "st-save";
-  save.className = "px-3 py-1.5 rounded bg-blue-600 text-white text-sm hover:bg-blue-700";
+  save.className = "px-5 h-9 rounded-full bg-primary text-on-primary text-sm font-medium hover:shadow-md";
   save.textContent = "Save";
   btns.appendChild(test);
   btns.appendChild(cancel);
