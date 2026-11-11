@@ -1273,7 +1273,9 @@ async def create_constraint_endpoint(request: Request):
     body = await _read_body(request)
     kind = body.get("kind")
     params = body.get("params")
-    hard = bool(body.get("hard", False))
+    # Pass the raw value through: actions.add_constraint validates 'hard' as a
+    # strict JSON boolean (a string "false" must be rejected, not coerced).
+    hard = body.get("hard", False)
     label = body.get("label")
     conn = _get_conn()
     try:

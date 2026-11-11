@@ -335,7 +335,7 @@ def test_rank_mode_uses_llm_choice(conn, monkeypatch):
     _enable_rank_mode(conn)
     gid, _ = _add_goal_material(conn, effort=0.8)
 
-    def fake_choose(self, *, job_context, candidates):
+    def fake_choose(self, *, job_context, candidates, timeout=None):
         return {"choice": candidates[-1]["index"], "reason": "rank pick"}
 
     monkeypatch.setattr(llm_mod.LLMClient, "choose_placement", fake_choose)
@@ -351,7 +351,7 @@ def test_rank_mode_llm_failure_falls_back(conn, monkeypatch):
     _enable_rank_mode(conn)
     gid, _ = _add_goal_material(conn, effort=0.8)
 
-    def exploding_choose(self, *, job_context, candidates):
+    def exploding_choose(self, *, job_context, candidates, timeout=None):
         raise RuntimeError("endpoint down")
 
     monkeypatch.setattr(llm_mod.LLMClient, "choose_placement", exploding_choose)

@@ -57,6 +57,17 @@ def _as_int(value: Any, key: str, lo: int, hi: int) -> int:
     return num
 
 
+def as_bool(value: Any) -> bool:
+    """Strict JSON boolean: only real bools pass, everything else raises.
+
+    Mirrors ``_as_int``: no coercion, so ``"false"`` / ``"true"`` / ``1`` /
+    ``0`` are rejected instead of silently becoming ``True``.
+    """
+    if isinstance(value, bool):
+        return value
+    raise ValueError("must be a JSON boolean true/false")
+
+
 def _as_subject(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = re.sub(r"\s+", " ", text)

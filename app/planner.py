@@ -42,6 +42,11 @@ def replan(conn, goal_id: str, now_iso: str) -> dict[str, Any]:
             if budget["calls"] >= MAX_LLM_PLACEMENT_CALLS or time.monotonic() > budget["deadline"]:
                 return {"budget_exhausted": True}
             budget["calls"] += 1
-            return client.choose_placement(job_context=job_context, candidates=candidates)
+            remaining = budget["deadline"] - time.monotonic()
+            return client.choose_placement(
+                job_context=job_context,
+                candidates=candidates,
+                timeout=min(15, max(1, remaining)),
+            )
 
     return engine.replan(conn, goal_id, now_iso, chooser=chooser)

@@ -11,11 +11,13 @@ Stdlib only — no LLM imports.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import db, planner
 from .constraints import (
+    as_bool,
     constraint_label,
     parse_constraint_row,
     serialise_params,
@@ -26,7 +28,7 @@ from .config import (
     validate_effort_hours,
     validate_slot_minutes,
 )
-from .errors import NotFoundError
+from .errors import NotFoundError, ValidationError
 
 
 def _now_utc() -> str:
@@ -329,18 +331,27 @@ def add_constraint(
     if isinstance(params, str):
         params = json.loads(params or "{}")
     kind_text, params_norm = validate_constraint(kind, params)
-    if kind_text == "interleave" and bool(hard):
+    try:
+        hard_flag = as_bool(hard)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    if kind_text == "interleave" and hard_flag:
         raise ValueError("interleave is soft-only; 'hard' is not supported for it")
     params_serialized = serialise_params(params_norm)
     for row in db.list_constraints(conn):
         if row["kind"] == kind_text and row["params"] == params_serialized:
             return {"constraint": constraint_out(row), "replanned_goals": 0, "existing": True}
-    label_text = str(label).strip()[:120] if label else constraint_label(kind_text, params_norm)
+    if label:
+        label_text = str(label).strip()
+        label_text = re.sub(r"[\x00-\x1f\x7f]", "", label_text)
+        label_text = re.sub(r"\s+", " ", label_text).strip()[:120]
+    else:
+        label_text = constraint_label(kind_text, params_norm)
     constraint_id = db.create_constraint(
         conn,
         kind=kind_text,
         params=params_serialized,
-        hard=bool(hard),
+        hard=hard_flag,
         source=source if source in ("user", "llm") else "user",
         label=label_text,
     )

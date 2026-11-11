@@ -629,7 +629,11 @@ class LLMClient:
     # ------------------------------------------------------ placement ranking
 
     def choose_placement(
-        self, *, job_context: dict[str, Any], candidates: list[dict[str, Any]]
+        self,
+        *,
+        job_context: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Pick one hard-valid candidate slot for a job being placed.
 
@@ -637,6 +641,10 @@ class LLMClient:
         de-duplicated), already hard-validated — the chooser can only reorder
         valid options. Returns ``{"choice": int, "reason": str}``; raises on any
         failure so the caller (engine) falls back to the deterministic pick.
+
+        ``timeout`` bounds this single LLM call in seconds (None = the current
+        15 s default). The planner passes the remaining wall-clock budget so a
+        slow endpoint can never eat the whole replan.
         """
         if self.client is None:
             raise RuntimeError("LLM not configured")
@@ -664,8 +672,9 @@ class LLMClient:
             "Candidate slots:\n" + "\n".join(lines) + "\n"
             f"choice must be an integer between 0 and {len(candidates) - 1}."
         )
+        effective_timeout = 15.0 if timeout is None else float(timeout)
         resp = self.client.with_options(
-            max_retries=0, timeout=15
+            max_retries=0, timeout=effective_timeout
         ).chat.completions.create(  # type: ignore[union-attr]
             model=self.settings.llm_model,
             messages=[{"role": "user", "content": prompt}],

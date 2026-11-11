@@ -198,19 +198,54 @@ def _parse_toggle(raw: Any, allowed: tuple[str, str], default: str) -> str:
     return text if text in allowed else default
 
 
+def _parse_number(raw: Any, default: Any, cast: Any) -> Any:
+    """Decode a numeric setting, degrading a corrupt row to ``default``.
+
+    Mirrors ``_parse_toggle``: any exception (bad JSON, wrong type,
+    unparseable literal) yields ``default`` cast through ``cast``, so a
+    hand-corrupted settings row never 500s a replan. The API PUT path keeps
+    its strict validators (see ``put_settings`` in app/main.py).
+    """
+    try:
+        text = str(_decode_setting(raw if raw is not None else "")).strip()
+    except Exception:
+        return cast(default)
+    if not text:
+        return cast(default)
+    try:
+        return cast(text)
+    except Exception:
+        return cast(default)
+
+
+def _parse_intervals(raw: Any) -> list[int]:
+    """Parse ``revision_intervals_days`` JSON, degrading a corrupt row to the
+    built-in default."""
+    try:
+        return json.loads(
+            raw if raw is not None else DEFAULT_SETTINGS["revision_intervals_days"]
+        )
+    except Exception:
+        return [1, 3, 7, 14]
+
+
 def parse_settings(rows: list[dict[str, Any]]) -> Settings:
     values = {row["key"]: row["value"] for row in rows}
     return Settings(
-        daily_capacity_hours=float(
-            values.get("daily_capacity_hours", DEFAULT_SETTINGS["daily_capacity_hours"])
+        daily_capacity_hours=_parse_number(
+            values.get("daily_capacity_hours", DEFAULT_SETTINGS["daily_capacity_hours"]),
+            DEFAULT_SETTINGS["daily_capacity_hours"],
+            float,
         ),
-        slot_minutes=int(
-            values.get("slot_minutes", DEFAULT_SETTINGS["slot_minutes"])
+        slot_minutes=_parse_number(
+            values.get("slot_minutes", DEFAULT_SETTINGS["slot_minutes"]),
+            DEFAULT_SETTINGS["slot_minutes"],
+            int,
         ),
         min_slot_minutes=int(
             values.get("min_slot_minutes", DEFAULT_SETTINGS["min_slot_minutes"])
         ),
-        revision_intervals_days=json.loads(
+        revision_intervals_days=_parse_intervals(
             values.get(
                 "revision_intervals_days",
                 DEFAULT_SETTINGS["revision_intervals_days"],
@@ -219,8 +254,10 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
         llm_base_url=_decode_setting(values.get("llm_base_url", "")),
         llm_model=_decode_setting(values.get("llm_model", "")),
         llm_api_key=_decode_setting(values.get("llm_api_key", "")),
-        default_effort_hours=float(
-            values.get("default_effort_hours", DEFAULT_SETTINGS["default_effort_hours"])
+        default_effort_hours=_parse_number(
+            values.get("default_effort_hours", DEFAULT_SETTINGS["default_effort_hours"]),
+            DEFAULT_SETTINGS["default_effort_hours"],
+            float,
         ),
         ocr_provider=_decode_setting(
             values.get("ocr_provider", DEFAULT_SETTINGS["ocr_provider"])
@@ -228,11 +265,13 @@ def parse_settings(rows: list[dict[str, Any]]) -> Settings:
         cf_account_id=_decode_setting(values.get("cf_account_id", "")),
         cf_api_token=_decode_setting(values.get("cf_api_token", "")),
         ocr_model=_decode_setting(values.get("ocr_model", DEFAULT_SETTINGS["ocr_model"])),
-        ocr_min_chars=int(
-            values.get("ocr_min_chars", DEFAULT_SETTINGS["ocr_min_chars"])
+        ocr_min_chars=_parse_number(
+            values.get("ocr_min_chars", DEFAULT_SETTINGS["ocr_min_chars"]),
+            DEFAULT_SETTINGS["ocr_min_chars"],
+            int,
         ),
-        utc_offset_minutes=(
-            int(_decode_setting(values.get("utc_offset_minutes", "")) or 0)
+        utc_offset_minutes=_parse_number(
+            values.get("utc_offset_minutes", ""), 0, int
         ),
         smart_placement=_parse_toggle(values.get("smart_placement", "on"), ("on", "off"), "on"),
         llm_placement_mode=_parse_toggle(values.get("llm_placement_mode", "off"), ("off", "rank"), "off"),

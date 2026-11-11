@@ -230,7 +230,7 @@ def test_planner_budget_yields_budget_receipt(conn, monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_choose(self, *, job_context, candidates):
+    def fake_choose(self, *, job_context, candidates, timeout=None):
         calls["n"] += 1
         return {"choice": candidates[0]["index"], "reason": "rank pick"}
 
