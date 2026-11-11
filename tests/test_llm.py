@@ -2,6 +2,7 @@
 and unconfigured client -> offline fallback (no network)."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -31,6 +32,21 @@ def test_local_endpoint_without_api_key_still_builds_client():
     """llama.cpp/Ollama need no key; the SDK still requires a non-empty one."""
     c = LLMClient(_settings(llm_enabled=True, llm_api_key=""))
     assert c.client is not None
+
+
+def test_client_requests_are_bounded():
+    """Regression: SDK defaults retried twice, so an unreachable endpoint made
+    chat wait ~15 s before the offline fallback. Requests stay bounded."""
+    from app import llm as llm_module
+
+    c = LLMClient(_settings(llm_enabled=True))
+    client = c.client
+    assert client is not None
+    assert client.max_retries == llm_module.LLM_MAX_RETRIES == 0
+    assert client.timeout == llm_module.LLM_REQUEST_TIMEOUT_SECONDS
+    assert llm_module.LLM_REQUEST_TIMEOUT_SECONDS >= 30  # local models are slow
+    # A dead endpoint must not be retried without tools (same failure).
+    assert {"connection", "timeout", "auth"} <= llm_module.UNRECOVERABLE_WITHOUT_TOOLS
 
 
 # --------------------------------------------------------------------------- extract_json
@@ -379,7 +395,12 @@ def _scripted(*responses):
 
 
 def _seed_chat_db(conn):
-    gid = db.create_goal(conn, title="Limits", deadline="2026-12-18T00:00:00Z")
+    # Relative to today: the list_jobs chat tool defaults to "now .. +14 days",
+    # so a hard-coded slot drops out of the window as the calendar moves on.
+    slot = datetime.now(timezone.utc) + timedelta(days=1)
+    slot = slot.replace(hour=14, minute=0, second=0, microsecond=0)
+    deadline = (slot + timedelta(days=44)).strftime("%Y-%m-%dT00:00:00Z")
+    gid = db.create_goal(conn, title="Limits", deadline=deadline)
     mid = db.create_material(
         conn,
         goal_id=gid,
@@ -397,8 +418,8 @@ def _seed_chat_db(conn):
         conn,
         kind="study",
         title="Limits session",
-        dtstart="2026-11-09T14:00:00Z",
-        dtend="2026-11-09T14:50:00Z",
+        dtstart=slot.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        dtend=(slot + timedelta(minutes=50)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         locked=0,
     )
     db.create_job(

@@ -128,13 +128,24 @@ async function loadEvents() {
   const view = calendar.view;
   const from = isoDate(view.currentStart);
   const to = isoDate(view.currentEnd);
+  // Title reflects the *rendered* week, independent of whether the API call
+  // succeeds — the hardcoded placeholder in week.html used to linger on
+  // failure and disagree with the grid. ``currentEnd`` is exclusive, so the
+  // visible week ends one day earlier.
+  const lastDay = new Date(view.currentEnd);
+  lastDay.setDate(lastDay.getDate() - 1);
+  setText(rangeEl, `${utcDay(view.currentStart)} – ${utcDay(lastDay)}`);
   try {
     const events = await api(`events?from=${from}&to=${to}`);
     eventsCache = events;
     calendar.removeAllEvents();
     jobCbById.clear();
     events.forEach((e) => {
-      const draggable = e.kind !== "external";
+      const done = e.job && e.job.status === "done";
+      // External events are fixed (AGENTS.md #2) and completed jobs are
+      // immutable (AGENTS.md #3): neither may be dragged. Done jobs used to be
+      // rendered draggable, and the drop was then silently swallowed.
+      const draggable = e.kind !== "external" && !done;
       calendar.addEvent({
         id: e.id,
         title: e.title,
@@ -155,7 +166,6 @@ async function loadEvents() {
       const j = e.job || null;
       if (j && j.pinned === 1) pinnedJobs.add(e.id);
     });
-    setText(rangeEl, `${utcDay(view.currentStart)} – ${utcDay(view.currentEnd)}`);
     await updateProgress(events);
     const empty = events.length === 0;
     // The empty state is page-level, not mobile-only: on desktop an empty week
@@ -446,10 +456,13 @@ calendar = new Calendar(calendarEl, {
   },
   eventAllow: (dropInfo) => {
     if (!draggedJobId) return true;
-    // Never drop a job onto or over an external event.
-    const dur = draggedDuration || 50;
-    const ds = dropInfo.date;
-    const de = new Date(ds.getTime() + dur * 60000);
+    // FullCalendar v6 passes a DateSpanApi here — { start, end, allDay, ... }.
+    // There is no `dropInfo.date`; the old code read one, got `undefined`, and
+    // every comparison below failed, so this callback vetoed *every* drop and
+    // jobs could never be dragged anywhere.
+    const ds = dropInfo.start;
+    if (!ds) return true;
+    const de = dropInfo.end ?? addMinutes(ds, draggedDuration || 50);
     const overExternal = calendar.getEvents().some((e) => {
       if (e.extendedProps.kind !== "external") return false;
       const es = new Date(e.start);
@@ -479,7 +492,12 @@ calendar = new Calendar(calendarEl, {
   },
   eventDrop: async (info) => {
     const job = info.event.extendedProps.job;
-    if (!job || job.status === "done") return;
+    if (!job || job.status === "done") {
+      // Shouldn't be reachable (done jobs are not editable), but never leave
+      // a done job visually moved without a server write behind it.
+      info.revert();
+      return;
+    }
     const startIso = isoSeconds(info.event.start);
     const endIso = info.event.end ? isoSeconds(info.event.end) : isoSeconds(addMinutes(info.event.start, draggedDuration || 50));
     try {
@@ -502,6 +520,8 @@ document.addEventListener("click", (e) => {
   if (!popover.classList.contains("hidden") && !popover.contains(e.target)) closePopover();
 });
 
-loadEvents();
+// No manual loadEvents() here: FullCalendar fires datesSet on initial render
+// (and on every navigation), so calling it too double-fetched and stacked
+// duplicate error toasts.
 initSettings(btnSettings);
 initTour("week");

@@ -8,7 +8,7 @@ function ensureToastContainer() {
   if (toastContainer) return toastContainer;
   toastContainer = document.createElement("div");
   toastContainer.className =
-    "fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none";
+    "fixed top-20 right-4 z-50 flex flex-col gap-2 items-end pointer-events-none";
   document.body.appendChild(toastContainer);
   return toastContainer;
 }
@@ -16,7 +16,10 @@ function ensureToastContainer() {
 export function toast(message, kind = "info") {
   ensureToastContainer();
   const el = document.createElement("div");
-  const base = "px-4 py-3 rounded shadow-lg text-sm flex items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-300";
+  // max-w + break-words: an unbounded toast with a long server message used to
+  // stretch across the whole viewport (covering the header and the Saturday
+  // column) and get clipped on the left.
+  const base = "px-4 py-3 rounded shadow-lg text-sm flex items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-300 max-w-sm break-words";
   const kindMap = {
     info: "bg-blue-500/90 text-white",
     success: "bg-emerald-500/90 text-white",
