@@ -890,3 +890,19 @@ def test_chat_route_replan_failure_returns_error_and_rolls_back(tmp_path, monkey
         assert check.execute("SELECT COUNT(*) AS n FROM constraints").fetchone()["n"] == 0
     finally:
         check.close()
+
+
+def test_parse_constraint_row_hard_tolerant_read():
+    import app.constraints as c
+    base = {"id": "x", "kind": "interleave", "params": '{"max_consecutive": 2}', "label": None}
+    assert c._as_db_bool(True) is True
+    assert c._as_db_bool(False) is False
+    assert c._as_db_bool(1) is True
+    assert c._as_db_bool(0) is False
+    assert c._as_db_bool("false") is False
+    assert c._as_db_bool("true") is False
+    assert c._as_db_bool(None) is False
+    assert c._as_db_bool(2) is False
+    for raw, want in [("false", False), (1, True), (0, False), (True, True)]:
+        parsed = c.parse_constraint_row({**base, "hard": raw})
+        assert parsed["hard"] is want

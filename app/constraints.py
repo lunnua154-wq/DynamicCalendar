@@ -183,6 +183,21 @@ def constraint_label(kind: str, params: dict[str, Any]) -> str:
     return kind  # pragma: no cover - unknown kinds are rejected by validation
 
 
+def _as_db_bool(value: Any) -> bool:
+    """Read a SQLite boolean from a constraint row, tolerating hand-edits.
+
+    SQLite stores booleans as INTEGER 0/1 and ``True``/``False`` round-trip as
+    1/0. Anything else (TEXT 'false', stray floats, NULL) degrades to ``False``
+    — the safe direction: an unverifiable hard claim becomes soft rather than
+    silently excluding slots.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    return False
+
+
 def parse_constraint_row(row: dict[str, Any]) -> dict[str, Any] | None:
     """Parse a ``constraints`` table row into ``{kind, params, hard, label, id}``.
 
@@ -202,7 +217,7 @@ def parse_constraint_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "id": row["id"],
         "kind": kind,
         "params": params,
-        "hard": bool(row["hard"]),
+        "hard": _as_db_bool(row.get("hard")),
         "label": row.get("label") or kind,
     }
 
