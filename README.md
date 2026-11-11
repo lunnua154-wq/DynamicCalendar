@@ -104,4 +104,4 @@ then restart `python -m app.main`. The schema is re-created automatically; run
 
 ## Offline-first LLM
 
-With no LLM endpoint configured, every LLM skill (tag, cluster, chat, tune_settings) falls back to a deterministic path, so chat and file tagging work without any API key. Configure `llm_base_url` / `llm_model` (and optional `llm_api_key`) in Settings to point at any OpenAI-compatible endpoint (OpenAI, Cloudflare Workers AI, Ollama…).
+With no LLM endpoint configured, every LLM skill (tag, cluster, chat, tune_settings) falls back to a deterministic path, so chat and file tagging work without any API key. Configure `llm_base_url` / `llm_model` (and optional `llm_api_key`) in Settings to point at any OpenAI-compatible endpoint (OpenAI, Cloudflare Workers AI, Ollama…). The same Settings panel exposes **Smart placement** (deterministic penalty scoring; `off` restores earliest-free-slot) and **LLM placement** (`off`|`rank`; opt-in — the configured LLM picks from a shortlist of hard-valid slots) and explains both inline.

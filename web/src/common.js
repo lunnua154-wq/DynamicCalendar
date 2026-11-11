@@ -240,6 +240,7 @@ export function formatHours(hours) {
 // Editable keys: llm_base_url, llm_model, llm_api_key,
 // daily_capacity_hours (0.5-12), slot_minutes (15-120),
 // default_effort_hours (0.1-20),
+// smart_placement (on|off), llm_placement_mode (off|rank),
 // ocr_provider (off|cloudflare), cf_account_id, cf_api_token, ocr_model.
 
 export function initSettings(btnEl) {
@@ -272,6 +273,8 @@ export function initSettings(btnEl) {
     { key: "daily_capacity_hours", label: "Daily capacity (hours)", type: "number", min: "0.5", max: "12", step: "0.5", placeholder: "0.5 – 12" },
     { key: "slot_minutes", label: "Slot length (minutes)", type: "number", min: "15", max: "120", step: "15", placeholder: "15 – 120" },
     { key: "default_effort_hours", label: "Default effort (hours)", type: "number", min: "0.1", max: "20", step: "0.1", placeholder: "0.1 – 20" },
+    { key: "smart_placement", label: "Smart placement", type: "select", options: ["on", "off"] },
+    { key: "llm_placement_mode", label: "LLM placement", type: "select", options: ["off", "rank"] },
     { key: "ocr_provider", label: "OCR provider", type: "select", placeholder: "off | cloudflare", options: ["off", "cloudflare"] },
     { key: "cf_account_id", label: "Cloudflare account ID", type: "text", placeholder: "account id" },
     { key: "cf_api_token", label: "Cloudflare API token", type: "password", placeholder: "token" },
@@ -454,6 +457,11 @@ export function initSettings(btnEl) {
     wrap.appendChild(input);
     form.appendChild(wrap);
   });
+  const note = document.createElement("p");
+  note.id = "st-placement-note";
+  note.className = "text-[11px] text-slate-500";
+  note.textContent =
+    "Smart placement scores valid slots deterministically (fatigue, subject adjacency) — on by default; off restores earliest-free-slot. LLM placement (rank) is opt-in: the configured LLM picks from ≤4 hard-valid slots, ≤16 calls per replan, deterministic fallback. Default installs make no LLM calls.";
   const status = document.createElement("p");
   status.id = "st-status";
   status.className = "text-xs mb-2 text-slate-500";
@@ -462,6 +470,7 @@ export function initSettings(btnEl) {
   llmResult.id = "st-llm-result";
   llmResult.className = "text-[11px] mb-3";
   card.appendChild(form);
+  card.appendChild(note);
   card.appendChild(status);
   card.appendChild(llmResult);
   const btns = document.createElement("div");
