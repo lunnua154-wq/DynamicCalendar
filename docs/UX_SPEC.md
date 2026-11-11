@@ -12,8 +12,9 @@ Vocabulary: see `docs/GLOSSARY.md`. Styling: Tailwind, tokens defined in `web/ta
 - **Loading**: skeleton rows/bars; never a blank page.
 - **Error handling**: every failed API call → error toast with the server's message;
   UI state is never left half-updated (revert optimistic changes).
-- **Colors** (theme tokens): `external` = slate/blue (solid), `study` = amber (outline card),
-  `revision` = violet (dashed border), `done` = faded + strikethrough.
+- **Colors** (theme tokens, Material 3 light scheme): `external` = sky (solid), `study` =
+  amber (left-accent card), `revision` = violet (dashed border), `done` = faded + strikethrough;
+  everything else uses the M3 role tokens (`primary`, `surface-container*`, `outline*`).
 - **Desktop-first** (M0). Below 768 px: week grid collapses to a vertical list per day
   (M4/M5 polish) and must remain usable: no horizontal scroll, checkboxes reachable.
 - **Settings panel** (M2/M3/M4): LLM endpoint (`base_url`, `model`, `api_key`) **and**

@@ -58,8 +58,8 @@ function isSameDay(a, b) {
 }
 
 function eventKindClass(kind) {
-  if (kind === "external") return "border-external bg-external/90 text-slate-900 font-medium cursor-not-allowed";
-  return "border-study bg-white text-slate-900 font-medium cursor-move shadow-sm";
+  if (kind === "external") return "border border-external bg-external text-white font-medium cursor-not-allowed";
+  return "border border-outline-variant border-l-4 border-l-study bg-surface-container-lowest text-on-surface font-medium cursor-move shadow-sm";
 }
 
 function renderEvent(arg) {
@@ -69,11 +69,11 @@ function renderEvent(arg) {
   const done = job && job.status === "done";
   const card = document.createElement("div");
   card.className = `p-2 text-[11px] leading-tight rounded border ${done
-    ? "border-done bg-slate-100 text-slate-500 line-through font-medium opacity-70 cursor-default"
+    ? "border border-outline-variant bg-surface-container-high text-on-surface-variant line-through font-medium opacity-70 cursor-default"
     : eventKindClass(e.extendedProps.kind)}`;
 
   const time = document.createElement("div");
-  time.className = "text-[10px] " + (isExternal ? "text-slate-700" : "text-slate-500");
+  time.className = "text-[10px] " + (isExternal ? "text-on-surface" : "text-on-surface-variant");
   time.textContent = e.allDay ? "All day" : `${utcTime(e.start)}–${utcTime(e.end)}`;
   card.appendChild(time);
 
@@ -83,7 +83,7 @@ function renderEvent(arg) {
   card.appendChild(title);
 
   const meta = document.createElement("div");
-  meta.className = "text-[9px] text-slate-400 mt-0.5 truncate";
+  meta.className = "text-[9px] text-on-surface-variant mt-0.5 truncate";
   meta.textContent = isExternal
     ? `· ${e.extendedProps.venue || ""}`
     : job
@@ -111,7 +111,7 @@ function renderEvent(arg) {
   if (job && !done) {
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.className = "mt-1 shrink-0";
+    cb.className = "mt-1 shrink-0 accent-primary";
     cb.title = "Mark done";
     jobCbById.set(job.id, cb);
     cb.onclick = (ev) => {
@@ -229,7 +229,7 @@ async function tickJob(jobId, el) {
     cb.disabled = true;
     cb.checked = true;
   }
-  if (el) el.classList.add("line-through", "text-slate-400", "opacity-60");
+  if (el) el.classList.add("line-through", "text-on-surface-variant", "opacity-60");
   try {
     await api(`jobs/${jobId}/complete`, { method: "POST" });
     toast("Job marked done", "success");
@@ -239,7 +239,7 @@ async function tickJob(jobId, el) {
       cb.checked = false;
       cb.disabled = false;
     }
-    if (el) el.classList.remove("line-through", "text-slate-400", "opacity-60");
+    if (el) el.classList.remove("line-through", "text-on-surface-variant", "opacity-60");
     toast("Failed: " + err.message, "error");
   }
 }
@@ -272,23 +272,23 @@ function openPopover(job, anchorRect, fcEvent) {
   popover.innerHTML = "";
 
   const close = document.createElement("button");
-  close.className = "absolute right-2 top-2 text-slate-400 hover:text-slate-700 text-xs";
+  close.className = "absolute right-2 top-2 p-1.5 rounded-full text-on-surface-variant hover:bg-on-surface/10";
   close.textContent = "✕";
   close.onclick = closePopover;
   popover.appendChild(close);
 
   const title = document.createElement("div");
-  title.className = "font-semibold mb-1";
+  title.className = "font-medium text-on-surface mb-1 pr-6";
   title.textContent = fcEvent.title || "Job";
   popover.appendChild(title);
 
   const line = document.createElement("div");
-  line.className = "text-xs text-slate-500 mb-2";
+  line.className = "text-xs text-on-surface-variant mb-2";
   line.textContent = `${utcDay(fcEvent.start)} ${utcTime(fcEvent.start)}–${utcTime(fcEvent.end)} · ${job.duration_min != null ? job.duration_min + "m" : ""}`;
   popover.appendChild(line);
 
   const kind = document.createElement("div");
-  kind.className = "text-xs text-slate-500 mb-3";
+  kind.className = "text-xs text-on-surface-variant mb-3";
   kind.textContent = job.kind === "revision" ? `Revision R${job.revision_round ?? ""}` : "Learn job";
   const pinned = job.pinned === 1;
   if (pinned) {
@@ -297,9 +297,9 @@ function openPopover(job, anchorRect, fcEvent) {
   popover.appendChild(kind);
 
   const actions = document.createElement("div");
-  actions.className = "flex gap-2 pt-3 border-t border-slate-100";
+  actions.className = "flex gap-2 pt-3 border-t border-outline-variant";
   const skip = document.createElement("button");
-  skip.className = "flex-1 py-1.5 rounded text-sm text-slate-600 border border-slate-200 hover:bg-slate-50";
+  skip.className = "flex-1 h-9 rounded-full border border-outline text-sm font-medium text-primary hover:bg-primary/10";
   skip.textContent = "Mark skipped";
   skip.onclick = async () => {
     try {
@@ -312,7 +312,7 @@ function openPopover(job, anchorRect, fcEvent) {
     }
   };
   const replan = document.createElement("button");
-  replan.className = "flex-1 py-1.5 rounded text-sm text-blue-600 hover:bg-blue-50";
+  replan.className = "flex-1 h-9 rounded-full text-sm font-medium text-primary hover:bg-primary/10";
   replan.textContent = "Re-plan goal";
   replan.onclick = async () => {
     try {
@@ -356,7 +356,7 @@ function renderMobileList() {
     const dayEvents = byDay.get(dayKey).sort((a, b) => new Date(a.dtstart) - new Date(b.dtstart));
 
     const header = document.createElement("div");
-    header.className = "mb-2 mt-4 text-xs font-semibold text-slate-500 uppercase tracking-wider";
+    header.className = "mb-2 mt-4 text-xs font-semibold text-on-surface-variant uppercase tracking-wider";
     header.textContent = utcDay(dayKey);
     listEl.appendChild(header);
 
@@ -367,24 +367,24 @@ function renderMobileList() {
 
       const row = document.createElement("div");
       row.className = `flex items-start gap-2 p-2 rounded border ${done
-        ? "border-done bg-slate-100 text-slate-500 line-through opacity-60"
+        ? "border border-outline-variant bg-surface-container-high text-on-surface-variant line-through opacity-60"
         : isExternal
-        ? "border-external bg-external/10 text-slate-900"
-        : "border-study bg-white text-slate-900"}`;
+        ? "border border-external bg-external/15 text-on-surface"
+        : "border border-outline-variant border-l-4 border-l-study bg-surface-container-lowest text-on-surface"}`;
 
       const time = document.createElement("div");
-      time.className = "text-[10px] text-slate-500 shrink-0";
+      time.className = "text-[10px] text-on-surface-variant shrink-0";
       time.textContent = e.all_day === 1 ? "All day" : `${utcTime(e.dtstart)}–${utcTime(e.dtend)}`;
       row.appendChild(time);
 
       const info = document.createElement("div");
       info.className = "flex-1 min-w-0";
       const title = document.createElement("div");
-      title.className = "text-sm font-medium truncate";
+      title.className = "text-sm font-medium text-on-surface truncate";
       title.textContent = e.title;
       info.appendChild(title);
       const meta = document.createElement("div");
-      meta.className = "text-[9px] text-slate-400 truncate";
+      meta.className = "text-[9px] text-on-surface-variant truncate";
       meta.textContent = isExternal
         ? `· ${e.venue || ""}`
         : job
@@ -403,7 +403,7 @@ function renderMobileList() {
       if (job && !done) {
         const cb = document.createElement("input");
         cb.type = "checkbox";
-        cb.className = "mt-0.5 shrink-0";
+        cb.className = "mt-0.5 shrink-0 accent-primary";
         cb.title = "Mark done";
         jobCbById.set(job.id, cb);
         cb.onclick = (ev) => {
@@ -446,8 +446,8 @@ calendar = new Calendar(calendarEl, {
   headerToolbar: false,
   editable: true,
   // Today column tint (dayHeaderClassNames / dayCellClassNames).
-  dayHeaderClassNames: (arg) => (isSameDay(arg.date, today) ? ["bg-blue-50 font-bold text-blue-700"] : []),
-  dayCellClassNames: (arg) => (isSameDay(arg.date, today) ? ["bg-blue-50/50"] : []),
+  dayHeaderClassNames: (arg) => (isSameDay(arg.date, today) ? ["bg-primary-container font-bold text-on-primary-container"] : []),
+  dayCellClassNames: (arg) => (isSameDay(arg.date, today) ? ["bg-primary-container/40"] : []),
   eventDragStart: (info) => {
     if (info.event.extendedProps.kind === "external") return;
     const job = info.event.extendedProps.job;

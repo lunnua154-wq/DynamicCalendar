@@ -26,15 +26,15 @@ let topics = []; // {id, name, file_count, members: [{filename}]}
 
 function chip(text, kind) {
   const map = {
-    ready: "bg-emerald-100 text-emerald-700",
-    unattached: "bg-amber-100 text-amber-800",
-    duplicate: "bg-amber-100 text-amber-700",
-    superseded: "bg-slate-100 text-slate-500",
-    error: "bg-rose-100 text-rose-700",
-    processing: "bg-blue-100 text-blue-700 animate-pulse",
+    ready: "bg-emerald-100 text-emerald-800",
+    unattached: "bg-tertiary-container text-on-tertiary-container",
+    duplicate: "bg-tertiary-container text-on-tertiary-container",
+    superseded: "bg-surface-container-high text-on-surface-variant",
+    error: "bg-error-container text-on-error-container",
+    processing: "bg-primary-container text-on-primary-container animate-pulse",
   };
   const el = document.createElement("span");
-  el.className = `text-[10px] px-2 py-0.5 rounded-full ${map[kind] || "bg-slate-100 text-slate-500"}`;
+  el.className = `text-[10px] font-medium px-2.5 py-0.5 rounded-full ${map[kind] || "bg-surface-container-high text-on-surface-variant"}`;
   el.textContent = text;
   return el;
 }
@@ -45,8 +45,8 @@ function appendChat(role, content) {
   const bubble = document.createElement("div");
   bubble.className = `max-w-[80%] p-3 rounded-2xl text-sm whitespace-pre-wrap break-words ${
     role === "user"
-      ? "bg-blue-600 text-white rounded-tr-none"
-      : "bg-slate-200 text-slate-800 rounded-tl-none"
+      ? "bg-primary text-on-primary rounded-tr-lg"
+      : "bg-secondary-container text-on-secondary-container rounded-tl-lg"
   }`;
   bubble.textContent = content;
   div.appendChild(bubble);
@@ -70,13 +70,13 @@ async function setBadgeFromSettings() {
 // mode: "on" (configured), "off" (offline), "error" (configured but failing).
 function setLlmBadge(mode, detail = "") {
   const styles = {
-    on: "bg-emerald-100 text-emerald-700",
-    off: "bg-blue-100 text-blue-700",
-    error: "bg-rose-100 text-rose-700",
+    on: "bg-emerald-100 text-emerald-800",
+    off: "bg-secondary-container text-on-secondary-container",
+    error: "bg-error-container text-on-error-container",
   };
   llmBadge.textContent =
     mode === "on" ? `(LLM on${detail ? ` · ${detail}` : ""})` : mode === "error" ? "(LLM error)" : "(LLM off)";
-  llmBadge.className = `text-[10px] px-2 py-0.5 rounded max-w-[14rem] truncate ${styles[mode] || styles.off}`;
+  llmBadge.className = `text-[10px] font-medium px-2.5 py-0.5 rounded-full max-w-[14rem] truncate ${styles[mode] || styles.off}`;
   llmBadge.title =
     mode === "error"
       ? `The configured LLM endpoint failed: ${detail}. Replies use offline answers.`
@@ -127,7 +127,7 @@ function appendWarning(text) {
   row.className = "flex justify-start";
   const note = document.createElement("div");
   note.className =
-    "text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1 max-w-[80%]";
+    "text-[11px] text-on-error-container bg-error-container rounded-lg px-3 py-1.5 max-w-[80%]";
   note.textContent = text;
   row.appendChild(note);
   chatList.appendChild(row);
@@ -187,19 +187,19 @@ function appendReceipts(actions) {
   wrapper.className = "flex justify-start";
   const row = document.createElement("div");
   row.className =
-    "text-[11px] text-slate-500 bg-slate-100 border border-slate-200 rounded px-2 py-1 space-y-0.5 max-w-[80%]";
+    "text-[11px] text-on-surface-variant bg-surface-container border border-outline-variant rounded-lg px-3 py-1.5 space-y-0.5 max-w-[80%]";
   let needsReplan = false;
   actions.forEach((action) => {
     const { text, error } = receiptLine(action);
     const line = document.createElement("div");
-    line.className = error ? "text-rose-700" : "";
+    line.className = error ? "text-error" : "";
     line.textContent = text;
     row.appendChild(line);
     if (action && action.tool === "update_settings") needsReplan = true;
   });
   if (needsReplan) {
     const hint = document.createElement("div");
-    hint.className = "text-[10px] text-slate-400 pt-1";
+    hint.className = "text-[10px] text-on-surface-variant pt-1";
     hint.textContent = "press Re-plan to apply";
     row.appendChild(hint);
   }
@@ -307,13 +307,13 @@ async function uploadFiles(files) {
 ["dragenter", "dragover"].forEach((evt) => {
   dropZone.addEventListener(evt, (e) => {
     e.preventDefault();
-    dropZone.classList.add("border-blue-500", "bg-blue-50");
+    dropZone.classList.add("border-primary", "bg-primary-container/30");
   });
 });
 ["dragleave", "drop"].forEach((evt) => {
   dropZone.addEventListener(evt, (e) => {
     e.preventDefault();
-    dropZone.classList.remove("border-blue-500", "bg-blue-50");
+    dropZone.classList.remove("border-primary", "bg-primary-container/30");
   });
 });
 dropZone.addEventListener("drop", (e) => {
@@ -370,7 +370,7 @@ function updateAttachBanner() {
   if (goalId) {
     const sel = goalSelect.options[goalSelect.selectedIndex];
     const btn = document.createElement("button");
-    btn.className = "ml-auto underline text-blue-700 hover:text-blue-900 shrink-0";
+    btn.className = "ml-auto underline font-semibold text-on-tertiary-container shrink-0";
     btn.textContent = `Attach all to "${sel.textContent}"`;
     btn.onclick = attachAllReady;
     attachBanner.appendChild(btn);
@@ -388,11 +388,11 @@ function renderFiles() {
   const goalSelected = goalSelect.value;
   materials.forEach((m) => {
     const row = document.createElement("div");
-    row.className = "flex items-start gap-3 p-3 rounded border border-slate-200 bg-white";
+    row.className = "flex items-start gap-3 p-4 rounded-xl border border-outline-variant bg-surface-container-lowest";
     const left = document.createElement("div");
     left.className = "flex-1 min-w-0";
     const name = document.createElement("div");
-    name.className = "text-sm font-medium truncate";
+    name.className = "text-sm font-medium text-on-surface truncate";
     name.textContent = m.filename;
     left.appendChild(name);
     const statusBar = document.createElement("div");
@@ -403,13 +403,13 @@ function renderFiles() {
     }
     if (m.status_reason) {
       const reason = document.createElement("span");
-      reason.className = "text-[10px] text-slate-400";
+      reason.className = "text-[10px] text-on-surface-variant";
       reason.textContent = `· ${m.status_reason}`;
       statusBar.appendChild(reason);
     }
     if (m.summary) {
       const s = document.createElement("span");
-      s.className = "text-slate-500 truncate min-w-0";
+      s.className = "text-on-surface-variant truncate min-w-0";
       s.textContent = m.summary;
       statusBar.appendChild(s);
     }
@@ -419,7 +419,7 @@ function renderFiles() {
       tagsRow.className = "flex flex-wrap gap-1 mt-1";
       m.tags.forEach((t) => {
         const tag = document.createElement("span");
-        tag.className = "text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded";
+        tag.className = "text-[10px] bg-surface-container-high text-on-surface-variant px-2.5 py-0.5 rounded-full";
         tag.textContent = t;
         tagsRow.appendChild(tag);
       });
@@ -428,14 +428,14 @@ function renderFiles() {
     const effortRow = document.createElement("div");
     effortRow.className = "flex items-center gap-2 mt-2";
     const effortLabel = document.createElement("span");
-    effortLabel.className = "text-[11px] text-slate-500";
+    effortLabel.className = "text-[11px] text-on-surface-variant";
     effortLabel.textContent = "Effort (h)";
     const effortInput = document.createElement("input");
     effortInput.type = "number";
     effortInput.step = "0.1";
     effortInput.min = "0.1";
     effortInput.value = m.effort_hours ?? "";
-    effortInput.className = "w-20 border border-slate-300 rounded px-1.5 py-1 text-[11px] focus:ring-2 focus:ring-blue-500 outline-none";
+    effortInput.className = "w-20 border border-outline rounded-lg bg-transparent text-on-surface px-2 py-1 text-[11px] focus:outline-none focus:ring-2 focus:ring-primary";
     const oldEffort = effortInput.value;
     effortInput.onchange = async () => {
       const v = Number(effortInput.value);
@@ -464,7 +464,7 @@ function renderFiles() {
     if (m.status === "duplicate") { dismissAction = "new"; dismissLabel = "Undo duplicate"; }
     else if (m.status === "superseded") { dismissAction = "new"; dismissLabel = "Undo"; }
     const dismiss = document.createElement("button");
-    dismiss.className = "text-[11px] underline text-slate-500 hover:text-rose-600";
+    dismiss.className = "text-[11px] text-on-surface-variant underline hover:text-error";
     dismiss.textContent = dismissLabel;
     dismiss.onclick = async () => {
       try {
@@ -477,7 +477,7 @@ function renderFiles() {
     };
 
     const openBtn = document.createElement("button");
-    openBtn.className = "text-[11px] text-blue-600 underline hover:underline";
+    openBtn.className = "text-[11px] font-medium text-primary underline";
     openBtn.textContent = "Open";
     openBtn.onclick = () => dialog(m.filename, m.summary || "No summary available.");
 
@@ -486,7 +486,7 @@ function renderFiles() {
     if (goalSelected && m.status === "ready") {
       const attach = document.createElement("button");
       const sel = goalSelect.options[goalSelect.selectedIndex];
-      attach.className = "text-[11px] text-blue-600 underline hover:underline";
+      attach.className = "text-[11px] font-medium text-primary underline";
       attach.textContent = `Attach to "${sel.textContent}"`;
       attach.onclick = async () => {
         try {
@@ -524,12 +524,12 @@ function closeMergeMenu() {
 function openMergeMenu(anchor, source) {
   closeMergeMenu();
   const menu = document.createElement("div");
-  menu.className = "absolute z-20 mt-1 border border-slate-300 rounded bg-white shadow-sm";
+  menu.className = "absolute z-20 mt-1 border border-outline-variant rounded-xl bg-surface-container-lowest shadow-lg overflow-hidden";
   const targets = topics.filter((t) => t.id !== source.id);
   if (targets.length === 0) return;
   targets.forEach((t) => {
     const item = document.createElement("button");
-    item.className = "w-full text-left px-3 py-2 text-slate-700 hover:bg-blue-50 text-[11px]";
+    item.className = "w-full text-left px-4 py-2 text-on-surface hover:bg-primary/10 text-[11px]";
     item.textContent = `Merge into "${t.name || "Unnamed"}" (${t.file_count ?? 0})`;
     item.onclick = async (e) => {
       e.stopPropagation();
@@ -571,7 +571,7 @@ function renderTopics() {
   topicsStrip.innerHTML = "";
   topics.forEach((t) => {
     const pill = document.createElement("div");
-    pill.className = "flex items-center gap-2 px-3 py-1 rounded border border-slate-200 bg-white text-sm";
+    pill.className = "flex items-center gap-2 px-3 py-1 rounded-full border border-outline-variant bg-surface-container-lowest text-sm text-on-surface";
     const name = document.createElement("span");
     name.className = "truncate";
     name.style.maxWidth = "160px";
@@ -581,7 +581,7 @@ function renderTopics() {
     pill.appendChild(name);
 
     const rename = document.createElement("button");
-    rename.className = "text-[11px] underline text-slate-500 hover:text-blue-600";
+    rename.className = "text-[11px] text-on-surface-variant underline hover:text-primary";
     rename.textContent = "rename";
     rename.onclick = async () => {
       const value = await promptDialog("Rename topic", `New name for "${t.name || "Unnamed"}":`, t.name || "");
@@ -597,7 +597,7 @@ function renderTopics() {
     pill.appendChild(rename);
 
     const merge = document.createElement("button");
-    merge.className = "text-[11px] underline text-slate-500 hover:text-blue-600 ml-2";
+    merge.className = "text-[11px] text-on-surface-variant underline hover:text-primary ml-2";
     merge.textContent = "merge ▾";
     merge.onclick = (e) => {
       e.stopPropagation();

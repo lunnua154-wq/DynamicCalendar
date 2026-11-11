@@ -59,7 +59,7 @@ function renderEvent(arg) {
 
   if (!e.allDay) {
     const time = document.createElement("span");
-    time.className = "shrink-0 font-medium text-slate-700";
+    time.className = "shrink-0 font-medium text-on-surface-variant";
     time.textContent = utcTime(e.startStr);
     container.appendChild(time);
   }
@@ -123,20 +123,20 @@ async function renderStats() {
       const pct = Math.round(Math.max(0, Math.min(1, progress)) * 100);
 
       const row = document.createElement("div");
-      row.className = "flex items-center gap-3 px-3 py-2 rounded border border-slate-200 bg-slate-50";
+      row.className = "flex items-center gap-3 px-3 py-2 rounded-xl border border-outline-variant bg-surface-container-lowest";
 
       const left = document.createElement("div");
       left.className = "flex-1 min-w-0";
       const name = document.createElement("div");
-      name.className = "text-xs font-medium text-slate-900 truncate";
+      name.className = "text-xs font-medium text-on-surface truncate";
       name.textContent = g.title || "Goal";
       left.appendChild(name);
       const sub = document.createElement("div");
-      sub.className = "flex items-center gap-2 text-[10px] text-slate-500";
+      sub.className = "flex items-center gap-2 text-[10px] text-on-surface-variant";
       const bar = document.createElement("div");
-      bar.className = "h-1.5 flex-1 min-w-[120px] bg-slate-200 rounded overflow-hidden";
+      bar.className = "h-1.5 flex-1 min-w-[120px] bg-surface-container-highest rounded-full overflow-hidden";
       const fill = document.createElement("div");
-      fill.className = "h-full bg-blue-600";
+      fill.className = "h-full bg-primary rounded-full";
       fill.style.width = `${pct}%`;
       bar.appendChild(fill);
       sub.appendChild(bar);
@@ -146,7 +146,7 @@ async function renderStats() {
       left.appendChild(sub);
 
       const right = document.createElement("div");
-      right.className = "text-[10px] text-slate-500 whitespace-nowrap";
+      right.className = "text-[10px] text-on-surface-variant whitespace-nowrap";
       const due = g.revisions_due != null ? g.revisions_due : panelRevisionsDue;
       right.textContent = `planned ${g.planned_jobs ?? 0}${due != null ? ` · due in 7d ${due}` : ""}`;
 
@@ -195,17 +195,17 @@ function openDay(date) {
   dayEvents.forEach((e) => {
     const job = e.extendedProps.job;
     const row = document.createElement("div");
-    row.className = "flex items-start gap-2 p-2 rounded border border-slate-200 bg-slate-50";
+    row.className = "flex items-start gap-2 p-3 rounded-xl border border-outline-variant bg-surface-container-lowest";
     const info = document.createElement("div");
     info.className = "flex-1 min-w-0";
     const time = document.createElement("div");
-    time.className = "text-[11px] text-slate-500";
+    time.className = "text-[11px] text-on-surface-variant";
     time.textContent = e.allDay ? "All day" : `${utcTime(e.start)}–${utcTime(e.end)}`;
     const title = document.createElement("div");
-    title.className = "text-sm font-medium truncate";
+    title.className = "text-sm font-medium text-on-surface truncate";
     title.textContent = e.title;
     const venue = document.createElement("div");
-    venue.className = "text-[11px] text-slate-500 truncate";
+    venue.className = "text-[11px] text-on-surface-variant truncate";
     let venueText = "";
     if (e.extendedProps.venue) venueText = `· ${e.extendedProps.venue}`;
     else if (job) venueText = `· ${job.duration_min != null ? job.duration_min + "m" : ""} ${job.kind || ""}`.trim();
@@ -217,19 +217,19 @@ function openDay(date) {
     if (job && job.status !== "done") {
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.className = "mt-0.5 shrink-0";
+      cb.className = "mt-0.5 shrink-0 accent-primary";
       cb.title = "Mark done";
       cb.onclick = async (ev) => {
         ev.stopPropagation();
         cb.disabled = true;
         cb.checked = true;
-        row.classList.add("line-through", "text-slate-400", "opacity-60");
+        row.classList.add("line-through", "text-on-surface-variant", "opacity-60");
         try {
           await tickJob(job.id);
           toast("Job marked done", "success");
         } catch (err) {
           cb.checked = false;
-          row.classList.remove("line-through", "text-slate-400", "opacity-60");
+          row.classList.remove("line-through", "text-on-surface-variant", "opacity-60");
           toast("Failed: " + err.message, "error");
         } finally {
           cb.disabled = false;
@@ -237,7 +237,7 @@ function openDay(date) {
       };
       row.appendChild(cb);
     } else if (job && job.status === "done") {
-      row.classList.add("line-through", "text-slate-400", "opacity-60");
+      row.classList.add("line-through", "text-on-surface-variant", "opacity-60");
     }
     dayPanelList.appendChild(row);
   });
