@@ -10,10 +10,16 @@ topic), then schedule every open goal.
 
 Everything is deterministic and offline (no LLM endpoint required); with an
 endpoint configured in Settings the same script uses it instead.
+
+Set ``DYNACALENDAR_UTC_OFFSET_MINUTES`` to lay the demo out in another local
+clock (a CI runner is UTC, but the packaged demo opens on a UTC+8 laptop):
+
+    DYNACALENDAR_UTC_OFFSET_MINUTES=480 python scripts/seed.py
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -50,6 +56,16 @@ def main() -> None:
 
     conn = db.connect(DB_PATH)
     db.init_db(conn)
+
+    # The study window is a dynamic setting seeded from the host clock. CI hosts
+    # run in UTC, so a demo built there would place "08:00" at 16:00 on a UTC+8
+    # laptop. Let the caller pin the offset before anything is scheduled.
+    offset_override = os.environ.get("DYNACALENDAR_UTC_OFFSET_MINUTES", "").strip()
+    if offset_override:
+        offset = int(offset_override)
+        db.update_setting(conn, "utc_offset_minutes", str(offset), "user")
+        conn.commit()
+        print(f"Study window offset: UTC{offset / 60:+g}")
 
     # 1. external calendar (read-only)
     ics_path = SAMPLES_DIR / "sample_calendar.ics"
