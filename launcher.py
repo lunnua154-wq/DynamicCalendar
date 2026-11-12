@@ -116,7 +116,29 @@ def _purge_stale_mei() -> None:
             pass
 
 
+def _safe(value: object) -> str:
+    """Render a path in the console encoding without ever raising.
+
+    A frozen build may live under a non-ASCII path (a Chinese user folder is the
+    common case on Windows), and the console defaults to cp1252 — printing such a
+    path used to abort the whole launch with UnicodeEncodeError.
+    """
+    text = str(value)
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        return text.encode(encoding, "replace").decode(encoding, "replace")
+    except Exception:
+        return text.encode("ascii", "replace").decode("ascii")
+
+
 def main() -> None:
+    # Prefer UTF-8 on the console; fall back silently on older/conpty hosts.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     _purge_stale_mei()
     data_dir, samples_dir = _prepare()
 
@@ -129,9 +151,9 @@ def main() -> None:
     print("=" * 62)
     print("  DynaCalendar")
     print(f"  URL      : {url}")
-    print(f"  Data     : {data_dir}")
+    print(f"  Data     : {_safe(data_dir)}")
     if samples_dir.is_dir():
-        print(f"  Samples  : {samples_dir}")
+        print(f"  Samples  : {_safe(samples_dir)}")
         print("             (use these in Import .ics / the drop zone)")
     print("  Close this window to stop the app.")
     print("=" * 62, flush=True)
