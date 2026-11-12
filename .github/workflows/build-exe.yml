@@ -94,14 +94,12 @@ jobs:
 
       - name: Package the demo build
         run: |
-          # Seed through the real pipeline (offline fallbacks), then pin the
-          # study-window offset: CI runs in UTC, and a demo laid out in UTC looks
-          # wrong on a UTC+8 laptop.
+          # Seed through the real pipeline (offline fallbacks). The offset pins
+          # the study window: CI runs in UTC, and a demo laid out in UTC would
+          # show its "08:00" slot at 16:00 on a UTC+8 laptop.
+          $env:DYNACALENDAR_UTC_OFFSET_MINUTES = "${{ inputs.demo_utc_offset_minutes }}"
+          if (-not $env:DYNACALENDAR_UTC_OFFSET_MINUTES) { $env:DYNACALENDAR_UTC_OFFSET_MINUTES = "480" }
           python scripts/seed.py
-          $offset = "${{ inputs.demo_utc_offset_minutes }}"
-          if (-not $offset) { $offset = "480" }
-          $env:DEMO_UTC_OFFSET = $offset
-          python -c "import json, os, sqlite3; c = sqlite3.connect(r'data\dynacalendar.db'); c.execute('UPDATE settings SET value = ? WHERE key = ?', (json.dumps(int(os.environ['DEMO_UTC_OFFSET'])), 'utc_offset_minutes')); c.commit()"
 
           New-Item -ItemType Directory -Force out-demo | Out-Null
           New-Item -ItemType Directory -Force out-demo\DynaCalendar-data | Out-Null
