@@ -4,13 +4,23 @@ name: build-exe
 # GitHub Release, so the teaching team can download a runnable build without
 # installing Python or Node.
 #
+# Two packages are produced from the one exe:
+#   DynaCalendar-win64.zip       clean install — empty database on first run
+#   DynaCalendar-win64-demo.zip  demo install — samples already imported and
+#                                planned, so the first launch shows a full week
+#
 # Triggers:
 #   - manually (Actions -> build-exe -> Run workflow)
-#   - on a published release (the exe is attached to it automatically)
+#   - on a published release (both zips are attached to it automatically)
 #   - on pushes to main that touch the app, the frontend, or the launcher
 
 on:
   workflow_dispatch:
+    inputs:
+      demo_utc_offset_minutes:
+        description: "UTC offset (minutes) used to lay out the pre-seeded demo day"
+        required: false
+        default: "480"
   release:
     types: [published]
   push:
@@ -19,15 +29,19 @@ on:
       - "app/**"
       - "web/**"
       - "samples/**"
+      - "scripts/**"
+      - "packaging/**"
       - "launcher.py"
       - "requirements.txt"
       - ".github/workflows/build-exe.yml"
 
+permissions:
+  contents: write
+
 jobs:
   windows-exe:
     runs-on: windows-latest
-    permissions:
-      contents: write
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -45,10 +59,14 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements.txt pyinstaller
+          python -V
 
       - name: Run the test suite
-        run: pytest -q
+        # pip and pytest must go through the same interpreter as the build:
+        # calling the console scripts by name alone is what made this step fail
+        # on the Windows runner before.
+        run: python -m pytest -q
 
       - name: Build the frontend
         working-directory: web
@@ -58,7 +76,7 @@ jobs:
 
       - name: Build the standalone exe
         run: >
-          pyinstaller --noconfirm --onefile --name DynaCalendar --paths .
+          python -m PyInstaller --noconfirm --onefile --name DynaCalendar --paths .
           --runtime-tmpdir "."
           --add-data "web/dist;web/dist"
           --add-data "samples;samples"
@@ -67,14 +85,31 @@ jobs:
           --collect-all magika
           launcher.py
 
-      - name: Package the release zip
+      - name: Package the clean build
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item dist\DynaCalendar.exe out\DynaCalendar.exe
           Copy-Item packaging\README-Windows.txt out\README.txt
           Compress-Archive -Path out\* -DestinationPath DynaCalendar-win64.zip -Force
 
-      - name: Upload the build artifact
+      - name: Package the demo build
+        run: |
+          # Seed through the real pipeline (offline fallbacks). The offset pins
+          # the study window: CI runs in UTC, and a demo laid out in UTC would
+          # show its "08:00" slot at 16:00 on a UTC+8 laptop.
+          $env:DYNACALENDAR_UTC_OFFSET_MINUTES = "${{ inputs.demo_utc_offset_minutes }}"
+          if (-not $env:DYNACALENDAR_UTC_OFFSET_MINUTES) { $env:DYNACALENDAR_UTC_OFFSET_MINUTES = "480" }
+          python scripts/seed.py
+
+          New-Item -ItemType Directory -Force out-demo | Out-Null
+          New-Item -ItemType Directory -Force out-demo\DynaCalendar-data | Out-Null
+          Copy-Item dist\DynaCalendar.exe out-demo\DynaCalendar.exe
+          Copy-Item data\dynacalendar.db out-demo\DynaCalendar-data\dynacalendar.db
+          Copy-Item data\materials out-demo\DynaCalendar-data\materials -Recurse
+          Copy-Item packaging\README-Windows-demo.txt out-demo\README.txt
+          Compress-Archive -Path out-demo\* -DestinationPath DynaCalendar-win64-demo.zip -Force
+
+      - name: Upload the clean build
         uses: actions/upload-artifact@v4
         with:
           name: DynaCalendar-win64
@@ -82,8 +117,18 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Attach the zip to the release
+      - name: Upload the demo build
+        uses: actions/upload-artifact@v4
+        with:
+          name: DynaCalendar-win64-demo
+          path: DynaCalendar-win64-demo.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach the zips to the release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: DynaCalendar-win64.zip
+          files: |
+            DynaCalendar-win64.zip
+            DynaCalendar-win64-demo.zip
